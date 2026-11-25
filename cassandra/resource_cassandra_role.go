@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -23,28 +25,28 @@ func resourceCassandraRole() *schema.Resource {
 			StateContext: schema.ImportStatePassthroughContext,
 		},
 		Schema: map[string]*schema.Schema{
-			"name": &schema.Schema{
+			"name": {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     true,
-				Description:  "Name of role - must contain between 1 and 256 characters",
-				ValidateFunc: validation.StringLenBetween(1, 256),
+				Description:  "Name of role - must contain between 1 and 256 characters and no double quotes",
+				ValidateFunc: validation.StringMatch(regexp.MustCompile(`^[^"]{1,256}$`), "name must contain between 1 and 256 chars and must not contain double quote character"),
 			},
-			"super_user": &schema.Schema{
+			"super_user": {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				Default:     false,
 				ForceNew:    false,
 				Description: "Allow role to create and manage other roles",
 			},
-			"login": &schema.Schema{
+			"login": {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				Default:     true,
 				ForceNew:    false,
 				Description: "Enables role to be able to login",
 			},
-			"password": &schema.Schema{
+			"password": {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     false,
@@ -98,7 +100,7 @@ func resourceRoleCreateOrUpdate(ctx context.Context, d *schema.ResourceData, met
 
 	defer session.Close()
 
-	createErr := session.Query(fmt.Sprintf(`%s ROLE '%s' WITH PASSWORD = '%s' AND LOGIN = %v AND SUPERUSER = %v`, boolToAction[createRole], name, password, login, superUser)).Exec()
+	createErr := session.Query(fmt.Sprintf(`%s ROLE '%s' WITH PASSWORD = '%s' AND LOGIN = %v AND SUPERUSER = %v`, boolToAction[createRole], cqlEscape(name), cqlEscape(password), login, superUser)).Exec()
 	if createErr != nil {
 		return diag.FromErr(createErr)
 	}
@@ -175,7 +177,7 @@ func resourceRoleDelete(ctx context.Context, d *schema.ResourceData, meta interf
 
 	defer session.Close()
 
-	err := session.Query(fmt.Sprintf(`DROP ROLE '%s'`, name)).Exec()
+	err := session.Query(fmt.Sprintf(`DROP ROLE '%s'`, cqlEscape(name))).Exec()
 	if err != nil {
 		diag.FromErr(err)
 	}
@@ -185,4 +187,9 @@ func resourceRoleDelete(ctx context.Context, d *schema.ResourceData, meta interf
 
 func resourceRoleUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	return resourceRoleCreateOrUpdate(ctx, d, meta, false)
+}
+
+// cqlEscape escapes a value for use inside a single-quoted CQL string literal.
+func cqlEscape(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
 }
