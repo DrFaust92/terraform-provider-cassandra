@@ -111,7 +111,7 @@ resource "cassandra_keyspace" "dc" {
   }
 }
 `,
-				ExpectError: regexp.MustCompile(`local_dc "datacentre1" is not a data center of the\s+cluster, which has: datacenter1`),
+				ExpectError: regexp.MustCompile(`local_dc\s+"datacentre1"\s+is\s+not\s+a\s+data\s+center\s+of\s+the\s+cluster,\s+which\s+has:\s+datacenter1`),
 			},
 		},
 	})
