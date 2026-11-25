@@ -47,35 +47,35 @@ func Provider() *schema.Provider {
 		},
 		ConfigureContextFunc: configureProvider,
 		Schema: map[string]*schema.Schema{
-			"username": &schema.Schema{
+			"username": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				DefaultFunc: schema.EnvDefaultFunc("CASSANDRA_USERNAME", ""),
 				Description: "Cassandra username",
 				Sensitive:   true,
 			},
-			"password": &schema.Schema{
+			"password": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				DefaultFunc: schema.EnvDefaultFunc("CASSANDRA_PASSWORD", ""),
 				Description: "Cassandra password",
 				Sensitive:   true,
 			},
-			"port": &schema.Schema{
+			"port": {
 				Type:         schema.TypeInt,
 				Optional:     true,
 				DefaultFunc:  schema.EnvDefaultFunc("CASSANDRA_PORT", 9042),
 				Description:  "Cassandra CQL Port",
 				ValidateFunc: validation.IsPortNumber,
 			},
-			"host": &schema.Schema{
+			"host": {
 				Type:         schema.TypeString,
 				DefaultFunc:  schema.EnvDefaultFunc("CASSANDRA_HOST", nil),
 				Description:  "Cassandra host",
 				Optional:     true,
 				ExactlyOneOf: []string{"host", "hosts"},
 			},
-			"hosts": &schema.Schema{
+			"hosts": {
 				Type: schema.TypeList,
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
@@ -84,19 +84,19 @@ func Provider() *schema.Provider {
 				Optional:    true,
 				Description: "Cassandra hosts",
 			},
-			"host_filter": &schema.Schema{
+			"host_filter": {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				Default:     false,
 				Description: "Filter all incoming events for host. Hosts have to existing before using this provider",
 			},
-			"connection_timeout": &schema.Schema{
+			"connection_timeout": {
 				Type:        schema.TypeInt,
 				Optional:    true,
 				Default:     1000,
 				Description: "Connection timeout in milliseconds",
 			},
-			"root_ca": &schema.Schema{
+			"root_ca": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				Description: "Use root CA to connect to Cluster. Applies only when useSSL is enabled",
@@ -124,44 +124,44 @@ func Provider() *schema.Provider {
 					return nil
 				},
 			},
-			"use_ssl": &schema.Schema{
+			"use_ssl": {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				Default:     false,
 				Description: "Use SSL when connecting to cluster",
 			},
-			"min_tls_version": &schema.Schema{
+			"min_tls_version": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				Default:      "TLS1.2",
 				Description:  "Minimum TLS Version used to connect to the cluster - allowed values are SSL3.0, TLS1.0, TLS1.1, TLS1.2. Applies only when useSSL is enabled",
 				ValidateFunc: validation.StringInSlice([]string{"TLS1.0", "TLS1.1", "TLS1.2", "TLS1.3"}, false),
 			},
-			"protocol_version": &schema.Schema{
+			"protocol_version": {
 				Type:        schema.TypeInt,
 				Optional:    true,
 				Default:     4,
 				Description: "CQL Binary Protocol Version",
 			},
-			"consistency": &schema.Schema{
+			"consistency": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				Default:     gocql.Quorum.String(),
 				Description: "Default consistency level",
 			},
-			"cql_version": &schema.Schema{
+			"cql_version": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				Default:     "3.0.0",
 				Description: "CQL version",
 			},
-			"keyspace": &schema.Schema{
+			"keyspace": {
 				Type:     schema.TypeString,
 				Optional: true,
 				// Default:     "system",
 				Description: "Initial Keyspace",
 			},
-			"disable_initial_host_lookup": &schema.Schema{
+			"disable_initial_host_lookup": {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				Description: "Whether the driver will not attempt to get host info from the system.peers table",
@@ -194,7 +194,7 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (interface{}
 		rawHosts = d.Get("hosts").([]interface{})
 	}
 
-	hosts := make([]string, len(rawHosts))
+	hosts := make([]string, 0, len(rawHosts))
 	hostFilter := d.Get("host_filter").(bool)
 
 	for _, value := range rawHosts {
@@ -232,9 +232,7 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (interface{}
 		cluster.HostFilter = gocql.WhiteListHostFilter(hosts...)
 	}
 
-	if v, ok := d.GetOkExists("disable_initial_host_lookup"); ok {
-		cluster.DisableInitialHostLookup = v.(bool)
-	}
+	cluster.DisableInitialHostLookup = d.Get("disable_initial_host_lookup").(bool)
 
 	if useSSL {
 
