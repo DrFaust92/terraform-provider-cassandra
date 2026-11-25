@@ -51,10 +51,10 @@ provider "cassandra" {
 
 ### Optional
 
-- `client_certificate` (String) PEM-encoded client certificate, for clusters that require TLS client authentication (`require_client_auth`). Requires `client_key`. Can also be set with the `CASSANDRA_CLIENT_CERTIFICATE` environment variable. Applies only when `use_ssl` is `true`.
+- `client_certificate` (String) PEM-encoded client certificate, for clusters that require TLS client authentication (`require_client_auth`). Set it together with `client_key`, both in the configuration or both in environment variables. Can also be set with the `CASSANDRA_CLIENT_CERTIFICATE` environment variable. Applies only when `use_ssl` is `true`.
 - `client_key` (String, Sensitive) PEM-encoded private key of `client_certificate`. Can also be set with the `CASSANDRA_CLIENT_KEY` environment variable.
 - `connection_timeout` (Number) Connection timeout to the cluster, in milliseconds. Defaults to `1000`.
-- `consistency` (String) Default consistency level for queries. Defaults to `QUORUM`.
+- `consistency` (String) Default consistency level for queries: one of `ANY`, `ONE`, `TWO`, `THREE`, `QUORUM`, `ALL`, `LOCAL_QUORUM`, `EACH_QUORUM`, `LOCAL_ONE`. Defaults to `QUORUM`.
 - `cql_version` (String) CQL version. Defaults to `3.0.0`.
 - `disable_initial_host_lookup` (Boolean) Do not look up the other nodes in the `system.peers` table; connect only to the configured hosts.
 - `host` (String) Host of a node in the Cassandra cluster. Can also be set with the `CASSANDRA_HOST` environment variable. Conflicts with `hosts`.
@@ -65,7 +65,7 @@ provider "cassandra" {
 - `min_tls_version` (String) Minimum TLS version used to connect to the cluster: one of `TLS1.0`, `TLS1.1`, `TLS1.2`, `TLS1.3`. Defaults to `TLS1.2`. Applies only when `use_ssl` is `true`.
 - `password` (String, Sensitive) Cassandra client password. Can also be set with the `CASSANDRA_PASSWORD` environment variable.
 - `port` (Number) Cassandra CQL port. Can also be set with the `CASSANDRA_PORT` environment variable. Defaults to `9042`.
-- `protocol_version` (Number) CQL binary protocol version. Defaults to `4`.
+- `protocol_version` (Number) CQL binary protocol version, `3` to `5`. Defaults to `4`.
 - `query_timeout` (Number) Timeout of each query, in milliseconds. Defaults to `60000`.
 - `root_ca` (String) PEM-encoded root CA used to verify the cluster certificate, instead of the system roots. Can also be set with the `CASSANDRA_ROOT_CA` environment variable. Applies only when `use_ssl` is `true`.
 - `use_ssl` (Boolean) Use TLS when connecting to the cluster. Can also be set with the `CASSANDRA_USE_SSL` environment variable.

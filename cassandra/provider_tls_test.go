@@ -89,3 +89,69 @@ provider "cassandra" {
 }
 `, filepath.Join(dir, "ca.pem"), clientCert)
 }
+
+// A local_dc that is not a data center of the cluster fails instead of
+// silently sending every query to the other data centers.
+func TestAccCassandraProvider_localDCNotFound(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+provider "cassandra" {
+  local_dc = "datacentre1"
+}
+
+resource "cassandra_keyspace" "dc" {
+  name                 = "local_dc_keyspace"
+  replication_strategy = "SimpleStrategy"
+  strategy_options = {
+    replication_factor = 1
+  }
+}
+`,
+				ExpectError: regexp.MustCompile(`local_dc "datacentre1" is not a data center of the\s+cluster, which has: datacenter1`),
+			},
+		},
+	})
+}
+
+// Invalid provider arguments fail at plan time, before connecting.
+func TestAccCassandraProvider_validation(t *testing.T) {
+	keyspace := `
+resource "cassandra_keyspace" "v" {
+  name                 = "validation_keyspace"
+  replication_strategy = "SimpleStrategy"
+  strategy_options = {
+    replication_factor = 1
+  }
+}
+`
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      `provider "cassandra" { client_key = "key" }` + keyspace,
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`client_certificate`),
+			},
+			{
+				Config:      `provider "cassandra" { consistency = "LOCAL_QUORUMM" }` + keyspace,
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`value must be one of`),
+			},
+			{
+				Config:      `provider "cassandra" { protocol_version = 2 }` + keyspace,
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`must be between 3 and 5`),
+			},
+			{
+				Config:      `provider "cassandra" { root_ca = "/etc/ssl/ca.pem" }` + keyspace,
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`not a valid PEM-encoded certificate`),
+			},
+		},
+	})
+}

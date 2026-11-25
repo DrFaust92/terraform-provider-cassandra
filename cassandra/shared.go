@@ -33,31 +33,36 @@ func nullIfEmpty(v types.String) types.String {
 	return v
 }
 
-// clusterResource holds the cluster configuration shared by all resources.
+// clusterResource holds the connection shared by all resources.
 type clusterResource struct {
-	cluster *gocql.ClusterConfig
+	conn *connection
 }
 
 func (r *clusterResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	cluster, err := clusterFromProviderData(req.ProviderData)
+	conn, err := connectionFromProviderData(req.ProviderData)
 	if err != nil {
 		resp.Diagnostics.AddError("Unexpected provider data", err.Error())
 		return
 	}
-	if cluster != nil {
-		r.cluster = cluster
+	if conn != nil {
+		r.conn = conn
 	}
 }
 
 // session opens a session to the cluster. Callers must close it.
 func (r *clusterResource) session(diags *diag.Diagnostics) *gocql.Session {
-	if r.cluster == nil {
+	if r.conn == nil {
 		diags.AddError("Provider not configured", "The Cassandra provider is not configured; set host or hosts (or CASSANDRA_HOST).")
 		return nil
 	}
-	session, err := r.cluster.CreateSession()
+	session, err := r.conn.cluster.CreateSession()
 	if err != nil {
 		diags.AddError("Unable to connect to Cassandra", fmt.Sprintf("Creating a session failed: %s", err))
+		return nil
+	}
+	if err := r.conn.checkLocalDC(session); err != nil {
+		session.Close()
+		diags.AddError("Invalid Cassandra provider configuration", err.Error())
 		return nil
 	}
 	return session

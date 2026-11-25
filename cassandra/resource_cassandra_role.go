@@ -97,7 +97,11 @@ func (r *roleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Optional:    true,
 				Sensitive:   true,
 				Description: "Password for the role when using Cassandra internal authentication, 40 to 512 characters. Stored in state; use `password_wo` to keep it out. Exactly one of `password` and `password_wo` must be set.",
-				Validators:  []validator.String{stringvalidator.LengthBetween(40, 512)},
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(40, 512),
+					// Warns on Terraform 1.11+, which supports password_wo.
+					stringvalidator.PreferWriteOnlyAttribute(path.MatchRoot("password_wo")),
+				},
 			},
 			"password_wo": schema.StringAttribute{
 				Optional:    true,

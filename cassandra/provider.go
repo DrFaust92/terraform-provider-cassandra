@@ -6,12 +6,16 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gocql/gocql"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/providervalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -44,7 +48,10 @@ var (
 	}
 )
 
-var _ provider.Provider = &cassandraProvider{}
+var (
+	_ provider.Provider                     = &cassandraProvider{}
+	_ provider.ProviderWithConfigValidators = &cassandraProvider{}
+)
 
 type cassandraProvider struct {
 	version string
@@ -121,6 +128,7 @@ func (p *cassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 			"connection_timeout": schema.Int64Attribute{
 				Optional:    true,
 				Description: "Connection timeout to the cluster, in milliseconds. Defaults to `1000`.",
+				Validators:  []validator.Int64{int64validator.AtLeast(1)},
 			},
 			"root_ca": schema.StringAttribute{
 				Optional:    true,
@@ -138,11 +146,13 @@ func (p *cassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 			},
 			"protocol_version": schema.Int64Attribute{
 				Optional:    true,
-				Description: "CQL binary protocol version. Defaults to `4`.",
+				Description: "CQL binary protocol version, `3` to `5`. Defaults to `4`.",
+				Validators:  []validator.Int64{int64validator.Between(3, 5)},
 			},
 			"consistency": schema.StringAttribute{
 				Optional:    true,
-				Description: "Default consistency level for queries. Defaults to `QUORUM`.",
+				Description: "Default consistency level for queries: one of `ANY`, `ONE`, `TWO`, `THREE`, `QUORUM`, `ALL`, `LOCAL_QUORUM`, `EACH_QUORUM`, `LOCAL_ONE`. Defaults to `QUORUM`.",
+				Validators:  []validator.String{stringvalidator.OneOf("ANY", "ONE", "TWO", "THREE", "QUORUM", "ALL", "LOCAL_QUORUM", "EACH_QUORUM", "LOCAL_ONE")},
 			},
 			"cql_version": schema.StringAttribute{
 				Optional:    true,
@@ -154,7 +164,7 @@ func (p *cassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 			},
 			"client_certificate": schema.StringAttribute{
 				Optional:    true,
-				Description: "PEM-encoded client certificate, for clusters that require TLS client authentication (`require_client_auth`). Requires `client_key`. Can also be set with the `CASSANDRA_CLIENT_CERTIFICATE` environment variable. Applies only when `use_ssl` is `true`.",
+				Description: "PEM-encoded client certificate, for clusters that require TLS client authentication (`require_client_auth`). Set it together with `client_key`, both in the configuration or both in environment variables. Can also be set with the `CASSANDRA_CLIENT_CERTIFICATE` environment variable. Applies only when `use_ssl` is `true`.",
 				Validators:  []validator.String{pemValidator{}},
 			},
 			"client_key": schema.StringAttribute{
@@ -176,6 +186,12 @@ func (p *cassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 				Description: "Do not look up the other nodes in the `system.peers` table; connect only to the configured hosts.",
 			},
 		},
+	}
+}
+
+func (p *cassandraProvider) ConfigValidators(context.Context) []provider.ConfigValidator {
+	return []provider.ConfigValidator{
+		providervalidator.RequiredTogether(path.MatchRoot("client_certificate"), path.MatchRoot("client_key")),
 	}
 }
 
@@ -204,7 +220,10 @@ func (p *cassandraProvider) Configure(ctx context.Context, req provider.Configur
 		return
 	}
 
-	resp.ResourceData = cluster
+	resp.ResourceData = &connection{
+		cluster: cluster,
+		localDC: stringOrEnv(config.LocalDC, "CASSANDRA_LOCAL_DC", ""),
+	}
 }
 
 func (p *cassandraProvider) Resources(_ context.Context) []func() resource.Resource {
@@ -381,14 +400,69 @@ func (pemValidator) ValidateString(_ context.Context, req validator.StringReques
 	}
 }
 
-// clusterFromProviderData returns the cluster configuration passed to resources by Configure.
-func clusterFromProviderData(data any) (*gocql.ClusterConfig, error) {
+// connection is the provider data passed to resources by Configure.
+type connection struct {
+	cluster *gocql.ClusterConfig
+	localDC string
+
+	mu        sync.Mutex
+	dcChecked bool
+}
+
+// connectionFromProviderData returns the connection passed to resources by Configure.
+func connectionFromProviderData(data any) (*connection, error) {
 	if data == nil {
 		return nil, nil
 	}
-	cluster, ok := data.(*gocql.ClusterConfig)
+	conn, ok := data.(*connection)
 	if !ok {
 		return nil, fmt.Errorf("unexpected provider data type %T", data)
 	}
-	return cluster, nil
+	return conn, nil
+}
+
+// checkLocalDC verifies once per provider instance that local_dc names a data
+// center of the cluster. The driver would otherwise send every query to the
+// other data centers without an error. A failed check is retried by the next
+// session.
+func (c *connection) checkLocalDC(session *gocql.Session) error {
+	if c.localDC == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dcChecked {
+		return nil
+	}
+
+	dcs, err := clusterDataCenters(session)
+	if err != nil {
+		return fmt.Errorf("checking local_dc: %w", err)
+	}
+	if !slices.Contains(dcs, c.localDC) {
+		return fmt.Errorf("local_dc %q is not a data center of the cluster, which has: %s", c.localDC, strings.Join(dcs, ", "))
+	}
+	c.dcChecked = true
+	return nil
+}
+
+// clusterDataCenters returns the sorted data center names of the cluster.
+func clusterDataCenters(session *gocql.Session) ([]string, error) {
+	var dc string
+	if err := session.Query(`SELECT data_center FROM system.local`).Scan(&dc); err != nil {
+		return nil, err
+	}
+	dcs := []string{dc}
+
+	iter := session.Query(`SELECT data_center FROM system.peers`).Iter()
+	for iter.Scan(&dc) {
+		if !slices.Contains(dcs, dc) {
+			dcs = append(dcs, dc)
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	slices.Sort(dcs)
+	return dcs, nil
 }
