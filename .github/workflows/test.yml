@@ -53,8 +53,20 @@ jobs:
             (echo; echo "Unexpected difference in directories after code generation. Run 'go generate ./...' command and commit."; exit 1)
           test -z "$(git status --porcelain)" || (git status --porcelain; echo "Untracked files after code generation."; exit 1)
 
+  goreleaser:
+    name: GoReleaser config is valid
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          args: check
+
   acceptance:
-    name: Acceptance tests (Cassandra ${{ matrix.cassandra }})
+    name: Acceptance tests (Cassandra ${{ matrix.cassandra }}, Terraform ${{ matrix.terraform }})
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -64,6 +76,11 @@ jobs:
         cassandra:
           - "4.1"
           - "5.0"
+        # The oldest supported Terraform (protocol 6) and the latest. Tests
+        # that need newer Terraform, such as write-only arguments, skip on 1.0.
+        terraform:
+          - "1.0.*"
+          - "latest"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,6 +91,7 @@ jobs:
           cache: true
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
+          terraform_version: ${{ matrix.terraform }}
           terraform_wrapper: false
       - name: Start Cassandra
         run: make testacc_setup CASSANDRA_VERSION="${MATRIX_CASSANDRA}"

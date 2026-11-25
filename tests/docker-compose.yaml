@@ -1,7 +1,10 @@
 # Cassandra for the acceptance tests, with password authentication and
 # authorization enabled (the role and grant resources need both).
 #
-#   CASSANDRA_VERSION=5.0 docker compose -f tests/docker-compose.yaml up -d --wait
+# The native port accepts plain connections, and TLS connections that present
+# a client certificate signed by tests/certs/ca.pem (see `make testacc_certs`).
+#
+#   make testacc_setup CASSANDRA_VERSION=5.0
 services:
   cassandra:
     image: cassandra:${CASSANDRA_VERSION:-5.0}
@@ -10,14 +13,31 @@ services:
     environment:
       MAX_HEAP_SIZE: 512M
       HEAP_NEWSIZE: 128M
+    volumes:
+      - ./certs:/certs:ro
     entrypoint:
       - sh
       - -c
       - |
+        set -e
+        conf=/etc/cassandra/cassandra.yaml
         sed -i \
           -e 's/^authenticator:.*/authenticator: PasswordAuthenticator/' \
           -e 's/^authorizer:.*/authorizer: CassandraAuthorizer/' \
-          /etc/cassandra/cassandra.yaml
+          "$$conf"
+        # Replace the client_encryption_options block.
+        awk '/^client_encryption_options:/ { skip = 1; next } skip && /^[a-z]/ { skip = 0 } !skip' "$$conf" > /tmp/cassandra.yaml
+        cat >> /tmp/cassandra.yaml <<'YAML'
+        client_encryption_options:
+          enabled: true
+          optional: true
+          require_client_auth: true
+          ssl_context_factory:
+            class_name: org.apache.cassandra.security.PEMBasedSslContextFactory
+          keystore: /certs/server.pem
+          truststore: /certs/ca.pem
+        YAML
+        cat /tmp/cassandra.yaml > "$$conf"
         exec docker-entrypoint.sh cassandra -f
     healthcheck:
       test: ["CMD", "cqlsh", "-u", "cassandra", "-p", "cassandra", "-e", "DESCRIBE KEYSPACES"]

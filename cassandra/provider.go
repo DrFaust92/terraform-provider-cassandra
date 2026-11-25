@@ -6,12 +6,16 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gocql/gocql"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/providervalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -44,7 +48,10 @@ var (
 	}
 )
 
-var _ provider.Provider = &cassandraProvider{}
+var (
+	_ provider.Provider                     = &cassandraProvider{}
+	_ provider.ProviderWithConfigValidators = &cassandraProvider{}
+)
 
 type cassandraProvider struct {
 	version string
@@ -73,6 +80,10 @@ type providerModel struct {
 	CQLVersion               types.String `tfsdk:"cql_version"`
 	Keyspace                 types.String `tfsdk:"keyspace"`
 	DisableInitialHostLookup types.Bool   `tfsdk:"disable_initial_host_lookup"`
+	ClientCertificate        types.String `tfsdk:"client_certificate"`
+	ClientKey                types.String `tfsdk:"client_key"`
+	LocalDC                  types.String `tfsdk:"local_dc"`
+	QueryTimeout             types.Int64  `tfsdk:"query_timeout"`
 }
 
 func (p *cassandraProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -117,15 +128,16 @@ func (p *cassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 			"connection_timeout": schema.Int64Attribute{
 				Optional:    true,
 				Description: "Connection timeout to the cluster, in milliseconds. Defaults to `1000`.",
+				Validators:  []validator.Int64{int64validator.AtLeast(1)},
 			},
 			"root_ca": schema.StringAttribute{
 				Optional:    true,
-				Description: "PEM-encoded root CA used to verify the cluster certificate. Applies only when `use_ssl` is `true`.",
+				Description: "PEM-encoded root CA used to verify the cluster certificate, instead of the system roots. Can also be set with the `CASSANDRA_ROOT_CA` environment variable. Applies only when `use_ssl` is `true`.",
 				Validators:  []validator.String{pemValidator{}},
 			},
 			"use_ssl": schema.BoolAttribute{
 				Optional:    true,
-				Description: "Use TLS when connecting to the cluster.",
+				Description: "Use TLS when connecting to the cluster. Can also be set with the `CASSANDRA_USE_SSL` environment variable.",
 			},
 			"min_tls_version": schema.StringAttribute{
 				Optional:    true,
@@ -134,11 +146,13 @@ func (p *cassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 			},
 			"protocol_version": schema.Int64Attribute{
 				Optional:    true,
-				Description: "CQL binary protocol version. Defaults to `4`.",
+				Description: "CQL binary protocol version, `3` to `5`. Defaults to `4`.",
+				Validators:  []validator.Int64{int64validator.Between(3, 5)},
 			},
 			"consistency": schema.StringAttribute{
 				Optional:    true,
-				Description: "Default consistency level for queries. Defaults to `QUORUM`.",
+				Description: "Default consistency level for queries: one of `ANY`, `ONE`, `TWO`, `THREE`, `QUORUM`, `ALL`, `LOCAL_QUORUM`, `EACH_QUORUM`, `LOCAL_ONE`. Defaults to `QUORUM`.",
+				Validators:  []validator.String{stringvalidator.OneOf("ANY", "ONE", "TWO", "THREE", "QUORUM", "ALL", "LOCAL_QUORUM", "EACH_QUORUM", "LOCAL_ONE")},
 			},
 			"cql_version": schema.StringAttribute{
 				Optional:    true,
@@ -148,11 +162,36 @@ func (p *cassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 				Optional:    true,
 				Description: "Initial keyspace for the connection.",
 			},
+			"client_certificate": schema.StringAttribute{
+				Optional:    true,
+				Description: "PEM-encoded client certificate, for clusters that require TLS client authentication (`require_client_auth`). Set it together with `client_key`, both in the configuration or both in environment variables. Can also be set with the `CASSANDRA_CLIENT_CERTIFICATE` environment variable. Applies only when `use_ssl` is `true`.",
+				Validators:  []validator.String{pemValidator{}},
+			},
+			"client_key": schema.StringAttribute{
+				Optional:    true,
+				Sensitive:   true,
+				Description: "PEM-encoded private key of `client_certificate`. Can also be set with the `CASSANDRA_CLIENT_KEY` environment variable.",
+			},
+			"local_dc": schema.StringAttribute{
+				Optional:    true,
+				Description: "Data center to send queries to, for multi-DC clusters. Queries go to nodes in this data center first, and to other data centers only when none are available; use it with the `LOCAL_*` consistency levels. Can also be set with the `CASSANDRA_LOCAL_DC` environment variable. By default queries are spread over all data centers.",
+			},
+			"query_timeout": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Timeout of each query, in milliseconds. Defaults to `60000`.",
+				Validators:  []validator.Int64{int64validator.AtLeast(1)},
+			},
 			"disable_initial_host_lookup": schema.BoolAttribute{
 				Optional:    true,
 				Description: "Do not look up the other nodes in the `system.peers` table; connect only to the configured hosts.",
 			},
 		},
+	}
+}
+
+func (p *cassandraProvider) ConfigValidators(context.Context) []provider.ConfigValidator {
+	return []provider.ConfigValidator{
+		providervalidator.RequiredTogether(path.MatchRoot("client_certificate"), path.MatchRoot("client_key")),
 	}
 }
 
@@ -165,9 +204,14 @@ func (p *cassandraProvider) Configure(ctx context.Context, req provider.Configur
 
 	// Unknown values (e.g. from resources not yet created) cannot configure a
 	// connection; resources will fail with a clear error if they are used.
-	if config.Host.IsUnknown() || config.Hosts.IsUnknown() || config.Username.IsUnknown() || config.Password.IsUnknown() || config.Port.IsUnknown() {
-		resp.Diagnostics.AddWarning("Unknown provider configuration", "The Cassandra provider configuration depends on values that are not known yet, so it cannot connect during this plan.")
-		return
+	for _, v := range []interface{ IsUnknown() bool }{
+		config.Host, config.Hosts, config.Username, config.Password, config.Port,
+		config.RootCA, config.UseSSL, config.ClientCertificate, config.ClientKey, config.LocalDC,
+	} {
+		if v.IsUnknown() {
+			resp.Diagnostics.AddWarning("Unknown provider configuration", "The Cassandra provider configuration depends on values that are not known yet, so it cannot connect during this plan.")
+			return
+		}
 	}
 
 	cluster, err := clusterConfig(ctx, config)
@@ -176,7 +220,10 @@ func (p *cassandraProvider) Configure(ctx context.Context, req provider.Configur
 		return
 	}
 
-	resp.ResourceData = cluster
+	resp.ResourceData = &connection{
+		cluster: cluster,
+		localDC: stringOrEnv(config.LocalDC, "CASSANDRA_LOCAL_DC", ""),
+	}
 }
 
 func (p *cassandraProvider) Resources(_ context.Context) []func() resource.Resource {
@@ -256,12 +303,18 @@ func clusterConfig(ctx context.Context, config providerModel) (*gocql.ClusterCon
 		Password: stringOrEnv(config.Password, "CASSANDRA_PASSWORD", ""),
 	}
 	cluster.ConnectTimeout = time.Duration(int64Or(config.ConnectionTimeout, 1000)) * time.Millisecond
-	cluster.Timeout = time.Minute
+	cluster.Timeout = time.Duration(int64Or(config.QueryTimeout, 60000)) * time.Millisecond
 	cluster.CQLVersion = stringOr(config.CQLVersion, "3.0.0")
 	cluster.Keyspace = config.Keyspace.ValueString()
 	cluster.Consistency = consistency
 	cluster.ProtoVersion = int(int64Or(config.ProtocolVersion, 4))
 	cluster.DisableInitialHostLookup = config.DisableInitialHostLookup.ValueBool()
+
+	if dc := stringOrEnv(config.LocalDC, "CASSANDRA_LOCAL_DC", ""); dc != "" {
+		// Token awareness sends each query to a replica in the local data
+		// center; other data centers are used only when it has no nodes up.
+		cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.DCAwareRoundRobinPolicy(dc))
+	}
 
 	if config.HostFilter.ValueBool() {
 		filter, err := whiteListHostFilter(hosts)
@@ -271,12 +324,23 @@ func clusterConfig(ctx context.Context, config providerModel) (*gocql.ClusterCon
 		cluster.HostFilter = filter
 	}
 
-	if config.UseSSL.ValueBool() {
+	useSSL := config.UseSSL.ValueBool()
+	if config.UseSSL.IsNull() {
+		if e := os.Getenv("CASSANDRA_USE_SSL"); e != "" {
+			b, err := strconv.ParseBool(e)
+			if err != nil {
+				return nil, fmt.Errorf("CASSANDRA_USE_SSL: %w", err)
+			}
+			useSSL = b
+		}
+	}
+
+	if useSSL {
 		tlsConfig := &tls.Config{
 			MinVersion: allowedTLSProtocols[stringOr(config.MinTLSVersion, "TLS1.2")],
 		}
 
-		if rootCA := config.RootCA.ValueString(); rootCA != "" {
+		if rootCA := stringOrEnv(config.RootCA, "CASSANDRA_ROOT_CA", ""); rootCA != "" {
 			caPool := x509.NewCertPool()
 			if !caPool.AppendCertsFromPEM([]byte(rootCA)) {
 				return nil, fmt.Errorf("root_ca: unable to load the PEM certificate")
@@ -284,10 +348,23 @@ func clusterConfig(ctx context.Context, config providerModel) (*gocql.ClusterCon
 			tlsConfig.RootCAs = caPool
 		}
 
+		clientCert := stringOrEnv(config.ClientCertificate, "CASSANDRA_CLIENT_CERTIFICATE", "")
+		clientKey := stringOrEnv(config.ClientKey, "CASSANDRA_CLIENT_KEY", "")
+		if (clientCert == "") != (clientKey == "") {
+			return nil, fmt.Errorf("client_certificate and client_key must be set together")
+		}
+		if clientCert != "" {
+			pair, err := tls.X509KeyPair([]byte(clientCert), []byte(clientKey))
+			if err != nil {
+				return nil, fmt.Errorf("client_certificate and client_key: %w", err)
+			}
+			tlsConfig.Certificates = []tls.Certificate{pair}
+		}
+
 		cluster.SslOpts = &gocql.SslOptions{Config: tlsConfig}
 	}
 
-	tflog.Debug(ctx, "configured Cassandra cluster", map[string]interface{}{"hosts": hosts, "port": port, "ssl": config.UseSSL.ValueBool()})
+	tflog.Debug(ctx, "configured Cassandra cluster", map[string]interface{}{"hosts": hosts, "port": port, "ssl": useSSL})
 
 	return cluster, nil
 }
@@ -319,18 +396,73 @@ func (pemValidator) ValidateString(_ context.Context, req validator.StringReques
 		return
 	}
 	if !x509.NewCertPool().AppendCertsFromPEM([]byte(req.ConfigValue.ValueString())) {
-		resp.Diagnostics.AddAttributeError(req.Path, "Invalid PEM", "root_ca is not a valid PEM-encoded certificate")
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid PEM", "The value is not a valid PEM-encoded certificate.")
 	}
 }
 
-// clusterFromProviderData returns the cluster configuration passed to resources by Configure.
-func clusterFromProviderData(data any) (*gocql.ClusterConfig, error) {
+// connection is the provider data passed to resources by Configure.
+type connection struct {
+	cluster *gocql.ClusterConfig
+	localDC string
+
+	mu        sync.Mutex
+	dcChecked bool
+}
+
+// connectionFromProviderData returns the connection passed to resources by Configure.
+func connectionFromProviderData(data any) (*connection, error) {
 	if data == nil {
 		return nil, nil
 	}
-	cluster, ok := data.(*gocql.ClusterConfig)
+	conn, ok := data.(*connection)
 	if !ok {
 		return nil, fmt.Errorf("unexpected provider data type %T", data)
 	}
-	return cluster, nil
+	return conn, nil
+}
+
+// checkLocalDC verifies once per provider instance that local_dc names a data
+// center of the cluster. The driver would otherwise send every query to the
+// other data centers without an error. A failed check is retried by the next
+// session.
+func (c *connection) checkLocalDC(session *gocql.Session) error {
+	if c.localDC == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dcChecked {
+		return nil
+	}
+
+	dcs, err := clusterDataCenters(session)
+	if err != nil {
+		return fmt.Errorf("checking local_dc: %w", err)
+	}
+	if !slices.Contains(dcs, c.localDC) {
+		return fmt.Errorf("local_dc %q is not a data center of the cluster, which has: %s", c.localDC, strings.Join(dcs, ", "))
+	}
+	c.dcChecked = true
+	return nil
+}
+
+// clusterDataCenters returns the sorted data center names of the cluster.
+func clusterDataCenters(session *gocql.Session) ([]string, error) {
+	var dc string
+	if err := session.Query(`SELECT data_center FROM system.local`).Scan(&dc); err != nil {
+		return nil, err
+	}
+	dcs := []string{dc}
+
+	iter := session.Query(`SELECT data_center FROM system.peers`).Iter()
+	for iter.Scan(&dc) {
+		if !slices.Contains(dcs, dc) {
+			dcs = append(dcs, dc)
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	slices.Sort(dcs)
+	return dcs, nil
 }
