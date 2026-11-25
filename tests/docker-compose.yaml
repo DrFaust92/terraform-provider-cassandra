@@ -1,10 +1,27 @@
-version: '3'
+# Cassandra for the acceptance tests, with password authentication and
+# authorization enabled (the role and grant resources need both).
+#
+#   CASSANDRA_VERSION=5.0 docker compose -f tests/docker-compose.yaml up -d --wait
 services:
   cassandra:
-    image:  cassandra:${CASSANDRA_VERSION:-latest}
-    environment:
-      - CASSANDRA_CLUSTER_NAME='Cassandra Terrform Provider Test Cluster'
+    image: cassandra:${CASSANDRA_VERSION:-5.0}
     ports:
-      - 9042:9042
-    volumes:
-      - ./cassandra.yaml:/etc/cassandra/cassandra.yaml
+      - "9042:9042"
+    environment:
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    entrypoint:
+      - sh
+      - -c
+      - |
+        sed -i \
+          -e 's/^authenticator:.*/authenticator: PasswordAuthenticator/' \
+          -e 's/^authorizer:.*/authorizer: CassandraAuthorizer/' \
+          /etc/cassandra/cassandra.yaml
+        exec docker-entrypoint.sh cassandra -f
+    healthcheck:
+      test: ["CMD", "cqlsh", "-u", "cassandra", "-p", "cassandra", "-e", "DESCRIBE KEYSPACES"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
