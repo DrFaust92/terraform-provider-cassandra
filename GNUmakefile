@@ -31,10 +31,13 @@ vet:
 fmt:
 	gofmt -s -w .
 
+docs:
+	go generate ./...
+
 fmtcheck:
 	@sh -c "'$(CURDIR)/scripts/gofmtcheck.sh'"
 
 lint:
 	golangci-lint run ./...
 
-.PHONY: build test testacc testacc_setup testacc_cleanup vet fmt fmtcheck lint
+.PHONY: docs build test testacc testacc_setup testacc_cleanup vet fmt fmtcheck lint

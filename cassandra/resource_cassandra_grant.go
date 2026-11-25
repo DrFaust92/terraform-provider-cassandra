@@ -133,6 +133,7 @@ func validIdentifier(i interface{}, path cty.Path, identifierName string, regula
 
 func resourceCassandraGrant() *schema.Resource {
 	return &schema.Resource{
+		Description:   "Grants a privilege on a resource to a Cassandra role. All arguments force a new grant.",
 		CreateContext: resourceGrantCreate,
 		ReadContext:   resourceGrantRead,
 		UpdateContext: resourceGrantUpdate,
@@ -142,7 +143,7 @@ func resourceCassandraGrant() *schema.Resource {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
-				Description: fmt.Sprintf("One of %s", strings.Join(allPrivileges, ", ")),
+				Description: fmt.Sprintf("Privilege to grant: `all`, `%s`.", strings.Join(allPrivileges, "`, `")),
 
 				ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
 					privilege := i.(string)
@@ -165,14 +166,14 @@ func resourceCassandraGrant() *schema.Resource {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     true,
-				Description:  "role name who we are granting privilege(s) to",
+				Description:  "Name of the role the privilege is granted to.",
 				ValidateFunc: validation.StringLenBetween(1, 256),
 			},
 			identifierResourceType: {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
-				Description: fmt.Sprintf("Resource type we are granting privilege to. Must be one of %s", strings.Join(allResources, ", ")),
+				Description: fmt.Sprintf("Type of resource the privilege applies to: `%s`.", strings.Join(allResources, "`, `")),
 
 				ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
 					resourceType := i.(string)
@@ -195,7 +196,7 @@ func resourceCassandraGrant() *schema.Resource {
 				Type:        schema.TypeString,
 				Optional:    true,
 				ForceNew:    true,
-				Description: fmt.Sprintf("keyspace qualifier to the resource, only applicable for resource %s", strings.Join(resourcesThatRequireKeyspaceQualifier, ", ")),
+				Description: fmt.Sprintf("Keyspace of the resource. Required when `resource_type` is `%s`.", strings.Join(resourcesThatRequireKeyspaceQualifier, "`, `")),
 
 				ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
 					keyspaceName := i.(string)
@@ -218,7 +219,7 @@ func resourceCassandraGrant() *schema.Resource {
 			identifierFunctionName: {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Description: fmt.Sprintf("keyspace qualifier to the resource, only applicable for resource %s", strings.Join(resourcesThatRequireKeyspaceQualifier, ", ")),
+				Description: fmt.Sprintf("Name of the function. Required when `resource_type` is `%s`.", resourceFunction),
 				ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
 					return validIdentifier(i, path, "function name", validIdentifierRegex)
 				},
@@ -228,7 +229,7 @@ func resourceCassandraGrant() *schema.Resource {
 				Type:        schema.TypeString,
 				Optional:    true,
 				ForceNew:    true,
-				Description: fmt.Sprintf("name of the table, applicable only for resource %s", resourceTable),
+				Description: fmt.Sprintf("Name of the table. Required when `resource_type` is `%s`.", resourceTable),
 				ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
 					return validIdentifier(i, path, "table name", validTableNameRegex)
 				},
@@ -238,7 +239,7 @@ func resourceCassandraGrant() *schema.Resource {
 				Type:          schema.TypeString,
 				Optional:      true,
 				ForceNew:      true,
-				Description:   fmt.Sprintf("name of the role, applicable only for resource %s", resourceRole),
+				Description:   fmt.Sprintf("Name of the role. Required when `resource_type` is `%s`.", resourceRole),
 				ValidateFunc:  validation.StringLenBetween(1, 256),
 				ConflictsWith: []string{identifierFunctionName, identifierTableName, identifierMbeanName, identifierMbeanPattern, identifierKeyspaceName},
 			},
@@ -246,7 +247,7 @@ func resourceCassandraGrant() *schema.Resource {
 				Type:        schema.TypeString,
 				Optional:    true,
 				ForceNew:    true,
-				Description: fmt.Sprintf("name of mbean, only applicable for resource %s", resourceMbean),
+				Description: fmt.Sprintf("Name of the MBean. Required when `resource_type` is `%s`.", resourceMbean),
 				ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
 					return validIdentifier(i, path, "mbean name", validIdentifierRegex)
 				},
@@ -256,7 +257,7 @@ func resourceCassandraGrant() *schema.Resource {
 				Type:        schema.TypeString,
 				Optional:    true,
 				ForceNew:    true,
-				Description: fmt.Sprintf("pattern for selecting mbeans, only valid for resource %s", resourceMbeans),
+				Description: fmt.Sprintf("Pattern selecting MBeans. Required when `resource_type` is `%s`.", resourceMbeans),
 
 				ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
 					mbeanPatternRaw := i.(string)
