@@ -1,38 +1,46 @@
-name: release
+# Terraform Provider release workflow, based on
+# hashicorp/terraform-provider-scaffolding-framework.
+#
+# Runs on tags matching "v*" (e.g. v1.0.0). Requires the GPG_PRIVATE_KEY and
+# PASSPHRASE secrets; GoReleaser signs the checksums file with that key.
+name: Release
+
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
+
+permissions: {}
+
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release and upload assets
     steps:
-      -
-        name: Checkout
-        uses: actions/checkout@v2.3.4
-      -
-        name: Unshallow
-        run: git fetch --prune --unshallow
-      -
-        name: Set up Go
-        uses: actions/setup-go@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: 1.17
-      -
-        name: Import GPG key
+          # GoReleaser needs the full history and tags.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: "go.mod"
+          # No cache restore in the release job.
+          cache: false
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
         id: import_gpg
-        uses: hashicorp/ghaction-import-gpg@v2.1.0
-        env:
-          # These secrets will need to be configured for the repository:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          PASSPHRASE: ${{ secrets.PASSPHRASE }}
-      -
-        name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v2.7.0
         with:
-          version: latest
-          args: release --rm-dist
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          args: release --clean
         env:
-          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
-          # GitHub sets this automatically
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
