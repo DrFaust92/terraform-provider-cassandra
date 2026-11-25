@@ -6,6 +6,8 @@ COMPOSE=$(COMPOSE_BIN) -f tests/docker-compose.yaml
 export CASSANDRA_HOST?=127.0.0.1
 export CASSANDRA_USERNAME?=cassandra
 export CASSANDRA_PASSWORD?=cassandra
+# Certificates for the TLS acceptance tests, written by testacc_certs.
+export CASSANDRA_TEST_CERTS?=$(CURDIR)/tests/certs
 
 default: build
 
@@ -19,7 +21,10 @@ test: fmtcheck
 testacc: fmtcheck
 	TF_ACC=1 go test ./cassandra -v $(TESTARGS) -timeout 120m
 
-testacc_setup:
+testacc_certs:
+	go run ./tests/certgen $(CASSANDRA_TEST_CERTS)
+
+testacc_setup: testacc_certs
 	CASSANDRA_VERSION=$(CASSANDRA_VERSION) $(COMPOSE) up -d --wait
 
 testacc_cleanup:
@@ -40,4 +45,4 @@ fmtcheck:
 lint:
 	golangci-lint run ./...
 
-.PHONY: docs build test testacc testacc_setup testacc_cleanup vet fmt fmtcheck lint
+.PHONY: docs build test testacc testacc_certs testacc_setup testacc_cleanup vet fmt fmtcheck lint

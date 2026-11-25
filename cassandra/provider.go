@@ -73,6 +73,10 @@ type providerModel struct {
 	CQLVersion               types.String `tfsdk:"cql_version"`
 	Keyspace                 types.String `tfsdk:"keyspace"`
 	DisableInitialHostLookup types.Bool   `tfsdk:"disable_initial_host_lookup"`
+	ClientCertificate        types.String `tfsdk:"client_certificate"`
+	ClientKey                types.String `tfsdk:"client_key"`
+	LocalDC                  types.String `tfsdk:"local_dc"`
+	QueryTimeout             types.Int64  `tfsdk:"query_timeout"`
 }
 
 func (p *cassandraProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -120,12 +124,12 @@ func (p *cassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 			},
 			"root_ca": schema.StringAttribute{
 				Optional:    true,
-				Description: "PEM-encoded root CA used to verify the cluster certificate. Applies only when `use_ssl` is `true`.",
+				Description: "PEM-encoded root CA used to verify the cluster certificate, instead of the system roots. Can also be set with the `CASSANDRA_ROOT_CA` environment variable. Applies only when `use_ssl` is `true`.",
 				Validators:  []validator.String{pemValidator{}},
 			},
 			"use_ssl": schema.BoolAttribute{
 				Optional:    true,
-				Description: "Use TLS when connecting to the cluster.",
+				Description: "Use TLS when connecting to the cluster. Can also be set with the `CASSANDRA_USE_SSL` environment variable.",
 			},
 			"min_tls_version": schema.StringAttribute{
 				Optional:    true,
@@ -148,6 +152,25 @@ func (p *cassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 				Optional:    true,
 				Description: "Initial keyspace for the connection.",
 			},
+			"client_certificate": schema.StringAttribute{
+				Optional:    true,
+				Description: "PEM-encoded client certificate, for clusters that require TLS client authentication (`require_client_auth`). Requires `client_key`. Can also be set with the `CASSANDRA_CLIENT_CERTIFICATE` environment variable. Applies only when `use_ssl` is `true`.",
+				Validators:  []validator.String{pemValidator{}},
+			},
+			"client_key": schema.StringAttribute{
+				Optional:    true,
+				Sensitive:   true,
+				Description: "PEM-encoded private key of `client_certificate`. Can also be set with the `CASSANDRA_CLIENT_KEY` environment variable.",
+			},
+			"local_dc": schema.StringAttribute{
+				Optional:    true,
+				Description: "Data center to send queries to, for multi-DC clusters. Queries go to nodes in this data center first, and to other data centers only when none are available; use it with the `LOCAL_*` consistency levels. Can also be set with the `CASSANDRA_LOCAL_DC` environment variable. By default queries are spread over all data centers.",
+			},
+			"query_timeout": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Timeout of each query, in milliseconds. Defaults to `60000`.",
+				Validators:  []validator.Int64{int64validator.AtLeast(1)},
+			},
 			"disable_initial_host_lookup": schema.BoolAttribute{
 				Optional:    true,
 				Description: "Do not look up the other nodes in the `system.peers` table; connect only to the configured hosts.",
@@ -165,9 +188,14 @@ func (p *cassandraProvider) Configure(ctx context.Context, req provider.Configur
 
 	// Unknown values (e.g. from resources not yet created) cannot configure a
 	// connection; resources will fail with a clear error if they are used.
-	if config.Host.IsUnknown() || config.Hosts.IsUnknown() || config.Username.IsUnknown() || config.Password.IsUnknown() || config.Port.IsUnknown() {
-		resp.Diagnostics.AddWarning("Unknown provider configuration", "The Cassandra provider configuration depends on values that are not known yet, so it cannot connect during this plan.")
-		return
+	for _, v := range []interface{ IsUnknown() bool }{
+		config.Host, config.Hosts, config.Username, config.Password, config.Port,
+		config.RootCA, config.UseSSL, config.ClientCertificate, config.ClientKey, config.LocalDC,
+	} {
+		if v.IsUnknown() {
+			resp.Diagnostics.AddWarning("Unknown provider configuration", "The Cassandra provider configuration depends on values that are not known yet, so it cannot connect during this plan.")
+			return
+		}
 	}
 
 	cluster, err := clusterConfig(ctx, config)
@@ -256,12 +284,18 @@ func clusterConfig(ctx context.Context, config providerModel) (*gocql.ClusterCon
 		Password: stringOrEnv(config.Password, "CASSANDRA_PASSWORD", ""),
 	}
 	cluster.ConnectTimeout = time.Duration(int64Or(config.ConnectionTimeout, 1000)) * time.Millisecond
-	cluster.Timeout = time.Minute
+	cluster.Timeout = time.Duration(int64Or(config.QueryTimeout, 60000)) * time.Millisecond
 	cluster.CQLVersion = stringOr(config.CQLVersion, "3.0.0")
 	cluster.Keyspace = config.Keyspace.ValueString()
 	cluster.Consistency = consistency
 	cluster.ProtoVersion = int(int64Or(config.ProtocolVersion, 4))
 	cluster.DisableInitialHostLookup = config.DisableInitialHostLookup.ValueBool()
+
+	if dc := stringOrEnv(config.LocalDC, "CASSANDRA_LOCAL_DC", ""); dc != "" {
+		// Token awareness sends each query to a replica in the local data
+		// center; other data centers are used only when it has no nodes up.
+		cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.DCAwareRoundRobinPolicy(dc))
+	}
 
 	if config.HostFilter.ValueBool() {
 		filter, err := whiteListHostFilter(hosts)
@@ -271,12 +305,23 @@ func clusterConfig(ctx context.Context, config providerModel) (*gocql.ClusterCon
 		cluster.HostFilter = filter
 	}
 
-	if config.UseSSL.ValueBool() {
+	useSSL := config.UseSSL.ValueBool()
+	if config.UseSSL.IsNull() {
+		if e := os.Getenv("CASSANDRA_USE_SSL"); e != "" {
+			b, err := strconv.ParseBool(e)
+			if err != nil {
+				return nil, fmt.Errorf("CASSANDRA_USE_SSL: %w", err)
+			}
+			useSSL = b
+		}
+	}
+
+	if useSSL {
 		tlsConfig := &tls.Config{
 			MinVersion: allowedTLSProtocols[stringOr(config.MinTLSVersion, "TLS1.2")],
 		}
 
-		if rootCA := config.RootCA.ValueString(); rootCA != "" {
+		if rootCA := stringOrEnv(config.RootCA, "CASSANDRA_ROOT_CA", ""); rootCA != "" {
 			caPool := x509.NewCertPool()
 			if !caPool.AppendCertsFromPEM([]byte(rootCA)) {
 				return nil, fmt.Errorf("root_ca: unable to load the PEM certificate")
@@ -284,10 +329,23 @@ func clusterConfig(ctx context.Context, config providerModel) (*gocql.ClusterCon
 			tlsConfig.RootCAs = caPool
 		}
 
+		clientCert := stringOrEnv(config.ClientCertificate, "CASSANDRA_CLIENT_CERTIFICATE", "")
+		clientKey := stringOrEnv(config.ClientKey, "CASSANDRA_CLIENT_KEY", "")
+		if (clientCert == "") != (clientKey == "") {
+			return nil, fmt.Errorf("client_certificate and client_key must be set together")
+		}
+		if clientCert != "" {
+			pair, err := tls.X509KeyPair([]byte(clientCert), []byte(clientKey))
+			if err != nil {
+				return nil, fmt.Errorf("client_certificate and client_key: %w", err)
+			}
+			tlsConfig.Certificates = []tls.Certificate{pair}
+		}
+
 		cluster.SslOpts = &gocql.SslOptions{Config: tlsConfig}
 	}
 
-	tflog.Debug(ctx, "configured Cassandra cluster", map[string]interface{}{"hosts": hosts, "port": port, "ssl": config.UseSSL.ValueBool()})
+	tflog.Debug(ctx, "configured Cassandra cluster", map[string]interface{}{"hosts": hosts, "port": port, "ssl": useSSL})
 
 	return cluster, nil
 }
@@ -319,7 +377,7 @@ func (pemValidator) ValidateString(_ context.Context, req validator.StringReques
 		return
 	}
 	if !x509.NewCertPool().AppendCertsFromPEM([]byte(req.ConfigValue.ValueString())) {
-		resp.Diagnostics.AddAttributeError(req.Path, "Invalid PEM", "root_ca is not a valid PEM-encoded certificate")
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid PEM", "The value is not a valid PEM-encoded certificate.")
 	}
 }
 
