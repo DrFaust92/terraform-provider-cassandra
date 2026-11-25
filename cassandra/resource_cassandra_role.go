@@ -17,6 +17,7 @@ import (
 
 func resourceCassandraRole() *schema.Resource {
 	return &schema.Resource{
+		Description:   "Manages a Cassandra role.",
 		CreateContext: resourceRoleCreate,
 		ReadContext:   resourceRoleRead,
 		UpdateContext: resourceRoleUpdate,
@@ -29,7 +30,7 @@ func resourceCassandraRole() *schema.Resource {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     true,
-				Description:  "Name of role - must contain between 1 and 256 characters and no double quotes",
+				Description:  "Name of the role, 1 to 256 characters with no double quotes.",
 				ValidateFunc: validation.StringMatch(regexp.MustCompile(`^[^"]{1,256}$`), "name must contain between 1 and 256 chars and must not contain double quote character"),
 			},
 			"super_user": {
@@ -37,20 +38,20 @@ func resourceCassandraRole() *schema.Resource {
 				Optional:    true,
 				Default:     false,
 				ForceNew:    false,
-				Description: "Allow role to create and manage other roles",
+				Description: "Allow the role to create and manage other roles. Defaults to `false`.",
 			},
 			"login": {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				Default:     true,
 				ForceNew:    false,
-				Description: "Enables role to be able to login",
+				Description: "Allow the role to log in. Defaults to `true`.",
 			},
 			"password": {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     false,
-				Description:  "Password for user when using Cassandra internal authentication",
+				Description:  "Password for the role when using Cassandra internal authentication, 40 to 512 characters.",
 				Sensitive:    true,
 				ValidateFunc: validation.StringLenBetween(40, 512),
 			},

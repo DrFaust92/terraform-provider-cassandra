@@ -30,6 +30,7 @@ var (
 
 func resourceCassandraKeyspace() *schema.Resource {
 	return &schema.Resource{
+		Description:   "Manages a Cassandra keyspace.",
 		CreateContext: resourceKeyspaceCreate,
 		ReadContext:   resourceKeyspaceRead,
 		UpdateContext: resourceKeyspaceUpdate,
@@ -42,7 +43,7 @@ func resourceCassandraKeyspace() *schema.Resource {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
-				Description: "Name of keyspace",
+				Description: "Name of the keyspace, 1 to 48 characters.",
 				ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
 					name := i.(string)
 
@@ -75,14 +76,14 @@ func resourceCassandraKeyspace() *schema.Resource {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     false,
-				Description:  "Keyspace replication strategy - must be one of SimpleStrategy or NetworkTopologyStrategy",
+				Description:  "Replication strategy: `SimpleStrategy` or `NetworkTopologyStrategy`.",
 				ValidateFunc: validation.StringInSlice([]string{"SimpleStrategy", "NetworkTopologyStrategy", "SingleRegionStrategy"}, false),
 			},
 			"strategy_options": {
 				Type:        schema.TypeMap,
 				Required:    true,
 				ForceNew:    false,
-				Description: "strategy options used with replication strategy",
+				Description: "Options for the replication strategy. `SimpleStrategy` takes `replication_factor`; `NetworkTopologyStrategy` takes data center names mapped to their replication factor.",
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},
@@ -110,7 +111,7 @@ func resourceCassandraKeyspace() *schema.Resource {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				ForceNew:    false,
-				Description: "Enable or disable durable writes - disabling is not recommended",
+				Description: "Enable durable writes. Disabling them is not recommended. Defaults to `true`.",
 				Default:     true,
 			},
 		},
