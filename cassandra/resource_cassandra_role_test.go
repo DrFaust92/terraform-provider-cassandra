@@ -10,6 +10,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
+// testAccRolePassword satisfies the 40-512 character password validation.
+const testAccRolePassword = "sup3rS3cr3tPassw0rd-for-acceptance-tests-only"
+
 func TestAccCassandraRole_basic(t *testing.T) {
 	name := "user"
 
@@ -23,7 +26,7 @@ func TestAccCassandraRole_basic(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCassandraRoleExists("cassandra_role.user"),
 					resource.TestCheckResourceAttr("cassandra_role.user", "name", name),
-					resource.TestCheckResourceAttr("cassandra_role.user", "password", "asdf1234"),
+					resource.TestCheckResourceAttr("cassandra_role.user", "password", testAccRolePassword),
 				),
 			},
 		},
@@ -40,7 +43,32 @@ func TestAccCassandraRole_invalid(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config:      testAccCassandraRoleConfigBasic(name),
-				ExpectError: regexp.MustCompile(".*name must contain between 1 and 256 chars and must not contain single quote.*"),
+				ExpectError: regexp.MustCompile("name must contain between 1 and 256 chars and must not contain double quote"),
+			},
+		},
+	})
+}
+
+// A single quote in the password must be escaped in the CREATE ROLE statement.
+func TestAccCassandraRole_quotedPassword(t *testing.T) {
+	password := testAccRolePassword + "-it's-quoted"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCassandraRoleDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+resource "cassandra_role" "user" {
+    name     = "quoted"
+    password = %q
+}
+`, password),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCassandraRoleExists("cassandra_role.user"),
+					resource.TestCheckResourceAttr("cassandra_role.user", "password", password),
+				),
 			},
 		},
 	})
@@ -50,9 +78,9 @@ func testAccCassandraRoleConfigBasic(name string) string {
 	return fmt.Sprintf(`
 resource "cassandra_role" "user" {
     name     = "%s"
-    password = "asdf1234"
+    password = "%s"
 }
-`, name)
+`, name, testAccRolePassword)
 }
 
 func testAccCassandraRoleDestroy(s *terraform.State) error {

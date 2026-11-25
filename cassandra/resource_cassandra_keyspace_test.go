@@ -47,7 +47,7 @@ func TestAccCassandraKeyspace_broken(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config:      testAccCassandraKeyspaceConfigBroken(keyspace),
-				ExpectError: regexp.MustCompile(".*replication_factor is an option for SimpleStrategy, not NetworkTopologyStrategy.*"),
+				ExpectError: regexp.MustCompile("Unrecognized strategy option"),
 			},
 		},
 	})
@@ -69,9 +69,9 @@ func testAccCassandraKeyspaceConfigBroken(keyspace string) string {
 	return fmt.Sprintf(`
 resource "cassandra_keyspace" "keyspace" {
     name                 = "%s"
-    replication_strategy = "NetworkTopologyStrategy"
+    replication_strategy = "SimpleStrategy"
     strategy_options     = {
-      replication_factor = 1
+      datacenter1 = 1
     }
 }
 `, keyspace)

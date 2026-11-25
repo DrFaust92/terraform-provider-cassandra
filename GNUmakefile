@@ -1,6 +1,11 @@
-TEST?=$$(go list ./... |grep -v 'vendor')
-GOFMT_FILES?=$$(find . -name '*.go' |grep -v vendor)
-PKG_NAME=cassandra
+TEST?=./...
+CASSANDRA_VERSION?=5.0
+COMPOSE_BIN?=$(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo docker-compose)
+COMPOSE=$(COMPOSE_BIN) -f tests/docker-compose.yaml
+
+export CASSANDRA_HOST?=127.0.0.1
+export CASSANDRA_USERNAME?=cassandra
+export CASSANDRA_PASSWORD?=cassandra
 
 default: build
 
@@ -8,47 +13,28 @@ build: fmtcheck
 	go install
 
 test: fmtcheck
-	go test -i $(TEST) || exit 1
-	echo $(TEST) | \
-		xargs -t -n4 go test $(TESTARGS) -timeout=30s -parallel=4
+	go test $(TEST) $(TESTARGS) -timeout=30s -parallel=4
 
-testacc_setup: fmtcheck
-	@sh -c "'$(CURDIR)/tests/testacc_setup.sh'"
-
-testacc_cleanup: fmtcheck
-	@sh -c "'$(CURDIR)/tests/testacc_cleanup.sh'"
-
+# Run acceptance tests against an already running Cassandra (see testacc_setup).
 testacc: fmtcheck
-	@sh -c "'$(CURDIR)/tests/testacc_full.sh'"
+	TF_ACC=1 go test ./cassandra -v $(TESTARGS) -timeout 120m
+
+testacc_setup:
+	CASSANDRA_VERSION=$(CASSANDRA_VERSION) $(COMPOSE) up -d --wait
+
+testacc_cleanup:
+	$(COMPOSE) down -v
 
 vet:
-	@echo "go vet ."
-	@go vet $$(go list ./... | grep -v vendor/) ; if [ $$? -eq 1 ]; then \
-		echo ""; \
-		echo "Vet found suspicious constructs. Please check the reported constructs"; \
-		echo "and fix them if necessary before submitting the code for review."; \
-		exit 1; \
-	fi
+	go vet ./...
 
 fmt:
-	gofmt -w $(GOFMT_FILES)
+	gofmt -s -w .
 
 fmtcheck:
 	@sh -c "'$(CURDIR)/scripts/gofmtcheck.sh'"
 
-errcheck:
-	@sh -c "'$(CURDIR)/scripts/errcheck.sh'"
+lint:
+	golangci-lint run ./...
 
-
-test-compile:
-	@if [ "$(TEST)" = "./..." ]; then \
-		echo "ERROR: Set TEST to a specific package. For example,"; \
-		echo "  make test-compile TEST=./$(PKG_NAME)"; \
-		exit 1; \
-	fi
-	go test -c $(TEST) $(TESTARGS)
-
-release:
-	@curl -sL http://git.io/goreleaser | bash
-
-.PHONY: build test testacc vet fmt fmtcheck errcheck test-compile release
+.PHONY: build test testacc testacc_setup testacc_cleanup vet fmt fmtcheck lint

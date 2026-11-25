@@ -13,7 +13,7 @@ Terraform 0.13 and later:
 terraform {
   required_providers {
     cassandra = {
-      source  = "bartoszj/cassandra"
+      source  = "DrFaust92/cassandra"
       version = "~> 1.0"
     }
   }

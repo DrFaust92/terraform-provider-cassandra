@@ -38,7 +38,7 @@ func resourceCassandraKeyspace() *schema.Resource {
 			StateContext: schema.ImportStatePassthroughContext,
 		},
 		Schema: map[string]*schema.Schema{
-			"name": &schema.Schema{
+			"name": {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
@@ -62,7 +62,7 @@ func resourceCassandraKeyspace() *schema.Resource {
 							{
 								Severity:      diag.Error,
 								Summary:       "Cannot manage system keyspace",
-								Detail:        fmt.Sprintf("cannot manage system keyspace, it is internal to Cassandra"),
+								Detail:        "cannot manage system keyspace, it is internal to Cassandra",
 								AttributePath: path,
 							},
 						}
@@ -71,14 +71,14 @@ func resourceCassandraKeyspace() *schema.Resource {
 					return nil
 				},
 			},
-			"replication_strategy": &schema.Schema{
+			"replication_strategy": {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     false,
 				Description:  "Keyspace replication strategy - must be one of SimpleStrategy or NetworkTopologyStrategy",
 				ValidateFunc: validation.StringInSlice([]string{"SimpleStrategy", "NetworkTopologyStrategy", "SingleRegionStrategy"}, false),
 			},
-			"strategy_options": &schema.Schema{
+			"strategy_options": {
 				Type:        schema.TypeMap,
 				Required:    true,
 				ForceNew:    false,
@@ -89,13 +89,16 @@ func resourceCassandraKeyspace() *schema.Resource {
 				StateFunc: func(v interface{}) string {
 					strategyOptions := v.(map[string]interface{})
 
+					// The zero-length prefix is intentional: the hash is stored
+					// in state, so changing how it is built would show a diff
+					// for every existing keyspace.
 					keys := make([]string, len(strategyOptions))
 
 					for key, value := range strategyOptions {
 
 						strValue := value.(string)
 
-						keys = append(keys, fmt.Sprintf("%q=%q", key, strValue))
+						keys = append(keys, fmt.Sprintf("%q=%q", key, strValue)) //nolint:makezero // see above
 					}
 
 					sort.Strings(keys)
@@ -103,7 +106,7 @@ func resourceCassandraKeyspace() *schema.Resource {
 					return hash(strings.Join(keys, ", "))
 				},
 			},
-			"durable_writes": &schema.Schema{
+			"durable_writes": {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				ForceNew:    false,
@@ -119,7 +122,7 @@ func generateCreateOrUpdateKeyspaceQueryString(name string, create bool, replica
 	numberOfStrategyOptions := len(strategyOptions)
 
 	if numberOfStrategyOptions == 0 {
-		return "", fmt.Errorf("must specify stratgey options - see https://docs.datastax.com/en/cql/3.3/cql/cql_reference/cqlCreateKeyspace.html")
+		return "", fmt.Errorf("must specify strategy options - see https://docs.datastax.com/en/cql/3.3/cql/cql_reference/cqlCreateKeyspace.html")
 	}
 
 	query := fmt.Sprintf(`%s KEYSPACE %s WITH REPLICATION = { 'class' : '%s'`, boolToAction[create], name, replicationStrategy)
