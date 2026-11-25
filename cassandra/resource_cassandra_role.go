@@ -4,68 +4,110 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"golang.org/x/crypto/bcrypt"
 )
 
-func resourceCassandraRole() *schema.Resource {
-	return &schema.Resource{
-		Description:   "Manages a Cassandra role.",
-		CreateContext: resourceRoleCreate,
-		ReadContext:   resourceRoleRead,
-		UpdateContext: resourceRoleUpdate,
-		DeleteContext: resourceRoleDelete,
-		Timeouts: &schema.ResourceTimeout{
-			Default: schema.DefaultTimeout(1 * time.Minute),
-		},
-		Importer: &schema.ResourceImporter{
-			StateContext: schema.ImportStatePassthroughContext,
-		},
-		Schema: map[string]*schema.Schema{
-			"name": {
-				Type:         schema.TypeString,
-				Required:     true,
-				ForceNew:     true,
-				Description:  "Name of the role, 1 to 256 characters with no double quotes.",
-				ValidateFunc: validation.StringMatch(regexp.MustCompile(`^[^"]{1,256}$`), "name must contain between 1 and 256 chars and must not contain double quote character"),
+const defaultRoleTimeout = time.Minute
+
+var (
+	_ resource.Resource                = &roleResource{}
+	_ resource.ResourceWithConfigure   = &roleResource{}
+	_ resource.ResourceWithImportState = &roleResource{}
+)
+
+// errRoleNotFound is returned by readRole when the role does not exist.
+var errRoleNotFound = errors.New("role not found")
+
+type roleResource struct {
+	clusterResource
+}
+
+func newRoleResource() resource.Resource {
+	return &roleResource{}
+}
+
+type roleModel struct {
+	ID        types.String `tfsdk:"id"`
+	Name      types.String `tfsdk:"name"`
+	SuperUser types.Bool   `tfsdk:"super_user"`
+	Login     types.Bool   `tfsdk:"login"`
+	Password  types.String `tfsdk:"password"`
+	Timeouts  types.Object `tfsdk:"timeouts"`
+}
+
+var timeoutsAttrTypes = map[string]attr.Type{"default": types.StringType}
+
+func (r *roleResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_role"
+}
+
+func (r *roleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Manages a Cassandra role.",
+		Attributes: map[string]schema.Attribute{
+			"id": schema.StringAttribute{
+				Computed:      true,
+				Description:   "Name of the role.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
-			"super_user": {
-				Type:        schema.TypeBool,
+			"name": schema.StringAttribute{
+				Required:      true,
+				Description:   "Name of the role, 1 to 256 characters with no double quotes.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(regexp.MustCompile(`^[^"]{1,256}$`), "name must contain between 1 and 256 chars and must not contain double quote character"),
+				},
+			},
+			"super_user": schema.BoolAttribute{
 				Optional:    true,
-				Default:     false,
-				ForceNew:    false,
+				Computed:    true,
+				Default:     booldefault.StaticBool(false),
 				Description: "Allow the role to create and manage other roles. Defaults to `false`.",
 			},
-			"login": {
-				Type:        schema.TypeBool,
+			"login": schema.BoolAttribute{
 				Optional:    true,
-				Default:     true,
-				ForceNew:    false,
+				Computed:    true,
+				Default:     booldefault.StaticBool(true),
 				Description: "Allow the role to log in. Defaults to `true`.",
 			},
-			"password": {
-				Type:         schema.TypeString,
-				Required:     true,
-				ForceNew:     false,
-				Description:  "Password for the role when using Cassandra internal authentication, 40 to 512 characters.",
-				Sensitive:    true,
-				ValidateFunc: validation.StringLenBetween(40, 512),
+			"password": schema.StringAttribute{
+				Required:    true,
+				Sensitive:   true,
+				Description: "Password for the role when using Cassandra internal authentication, 40 to 512 characters.",
+				Validators:  []validator.String{stringvalidator.LengthBetween(40, 512)},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"timeouts": schema.SingleNestedBlock{
+				Description: "Timeouts for role operations.",
+				Attributes: map[string]schema.Attribute{
+					"default": schema.StringAttribute{
+						Optional:    true,
+						Description: "How long to retry a password change that Cassandra throttles, as a duration such as `30s` or `2m`. Defaults to `1m`.",
+					},
+				},
 			},
 		},
 	}
 }
 
 func readRole(session *gocql.Session, name string) (string, bool, bool, string, error) {
-
 	var (
 		role        string
 		canLogin    bool
@@ -74,158 +116,170 @@ func readRole(session *gocql.Session, name string) (string, bool, bool, string, 
 	)
 
 	iter := session.Query(`select role, can_login, is_superuser, salted_hash from system_auth.roles where role = ?`, name).Iter()
-
-	defer iter.Close()
-
-	log.Printf("read role query returned %d", iter.NumRows())
-
-	for iter.Scan(&role, &canLogin, &isSuperUser, &saltedHash) {
-		return role, canLogin, isSuperUser, saltedHash, nil
-	}
-
+	found := iter.Scan(&role, &canLogin, &isSuperUser, &saltedHash)
 	if err := iter.Close(); err != nil {
 		return "", false, false, "", err
 	}
-
-	return "", false, false, "", fmt.Errorf("cannot read role with name %s: %w", name, errRoleNotFound)
+	if !found {
+		return "", false, false, "", fmt.Errorf("cannot read role with name %s: %w", name, errRoleNotFound)
+	}
+	return role, canLogin, isSuperUser, saltedHash, nil
 }
 
-// errRoleNotFound is returned by readRole when the role does not exist.
-var errRoleNotFound = errors.New("role not found")
-
-func resourceRoleCreateOrUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}, createRole bool) diag.Diagnostics {
-	name := d.Get("name").(string)
-	superUser := d.Get("super_user").(bool)
-	login := d.Get("login").(bool)
-	password := d.Get("password").(string)
-	var diags diag.Diagnostics
-
-	cluster := meta.(*gocql.ClusterConfig)
-	start := time.Now()
-	session, sessionCreateError := cluster.CreateSession()
-	elapsed := time.Since(start)
-
-	log.Printf("Getting a session took %s", elapsed)
-
-	if sessionCreateError != nil {
-		return diag.FromErr(sessionCreateError)
+func roleTimeout(m roleModel) (time.Duration, error) {
+	if m.Timeouts.IsNull() || m.Timeouts.IsUnknown() {
+		return defaultRoleTimeout, nil
 	}
-
-	defer session.Close()
-
-	options := fmt.Sprintf(`LOGIN = %v AND SUPERUSER = %v`, login, superUser)
-	// Only send the password when it is set or changed: Cassandra 5 rejects a
-	// password change within credentials_update_interval of the previous one.
-	if createRole || d.HasChange("password") {
-		options = fmt.Sprintf(`PASSWORD = '%s' AND %s`, cqlEscape(password), options)
+	v, ok := m.Timeouts.Attributes()["default"].(types.String)
+	if !ok || v.IsNull() || v.ValueString() == "" {
+		return defaultRoleTimeout, nil
 	}
-	query := fmt.Sprintf(`%s ROLE '%s' WITH %s`, boolToAction[createRole], cqlEscape(name), options)
-
-	createErr := retry.RetryContext(ctx, d.Timeout(schema.TimeoutDefault), func() *retry.RetryError {
-		err := session.Query(query).Exec()
-		if err != nil && strings.Contains(err.Error(), "can only be changed every") {
-			log.Printf("[DEBUG] password change for role %s throttled, retrying: %s", name, err)
-			return retry.RetryableError(err)
-		}
-		if err != nil {
-			return retry.NonRetryableError(err)
-		}
-		return nil
-	})
-	if createErr != nil {
-		return diag.FromErr(createErr)
-	}
-
-	d.SetId(name)
-	d.Set("name", name)
-	d.Set("super_user", superUser)
-	d.Set("login", login)
-	d.Set("password", password)
-
-	diags = append(diags, resourceRoleRead(ctx, d, meta)...)
-
-	return diags
-}
-
-func resourceRoleCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	return resourceRoleCreateOrUpdate(ctx, d, meta, true)
-}
-
-func resourceRoleRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	name := d.Id()
-	password := d.Get("password").(string)
-	var diags diag.Diagnostics
-
-	cluster := meta.(*gocql.ClusterConfig)
-	start := time.Now()
-	session, sessionCreateError := cluster.CreateSession()
-	elapsed := time.Since(start)
-
-	log.Printf("Getting a session took %s", elapsed)
-
-	if sessionCreateError != nil {
-		return diag.FromErr(sessionCreateError)
-	}
-
-	defer session.Close()
-	_name, login, superUser, saltedHash, readRoleErr := readRole(session, name)
-
-	if errors.Is(readRoleErr, errRoleNotFound) {
-		log.Printf("[WARN] role %s no longer exists, removing it from state", name)
-		d.SetId("")
-		return diags
-	}
-	if readRoleErr != nil {
-		return diag.FromErr(readRoleErr)
-	}
-
-	result := bcrypt.CompareHashAndPassword([]byte(saltedHash), []byte(password))
-
-	d.SetId(_name)
-	d.Set("name", _name)
-	d.Set("super_user", superUser)
-	d.Set("login", login)
-
-	if result == nil {
-		d.Set("password", password)
-	} else {
-		// password has changed between runs
-		d.Set("password", saltedHash)
-	}
-
-	return diags
-}
-
-func resourceRoleDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	name := d.Get("name").(string)
-	var diags diag.Diagnostics
-
-	cluster := meta.(*gocql.ClusterConfig)
-	start := time.Now()
-	session, sessionCreateError := cluster.CreateSession()
-	elapsed := time.Since(start)
-
-	log.Printf("Getting a session took %s", elapsed)
-
-	if sessionCreateError != nil {
-		return diag.FromErr(sessionCreateError)
-	}
-
-	defer session.Close()
-
-	err := session.Query(fmt.Sprintf(`DROP ROLE '%s'`, cqlEscape(name))).Exec()
+	d, err := time.ParseDuration(v.ValueString())
 	if err != nil {
-		diag.FromErr(err)
+		return 0, fmt.Errorf("timeouts.default: %w", err)
+	}
+	return d, nil
+}
+
+// writeRole runs CREATE or ALTER ROLE. The password is only sent when
+// setPassword is true: Cassandra 5 rejects a password change within
+// credentials_update_interval of the previous one, so a throttled change is
+// retried until the role's timeout.
+func (r *roleResource) writeRole(ctx context.Context, session *gocql.Session, create, setPassword bool, plan roleModel) error {
+	options := fmt.Sprintf(`LOGIN = %v AND SUPERUSER = %v`, plan.Login.ValueBool(), plan.SuperUser.ValueBool())
+	if setPassword {
+		options = fmt.Sprintf(`PASSWORD = '%s' AND %s`, cqlEscape(plan.Password.ValueString()), options)
+	}
+	query := fmt.Sprintf(`%s ROLE '%s' WITH %s`, boolToAction[create], cqlEscape(plan.Name.ValueString()), options)
+
+	timeout, err := roleTimeout(plan)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(timeout)
+
+	for {
+		err := session.Query(query).Exec()
+		if err == nil || !strings.Contains(err.Error(), "can only be changed every") || time.Now().After(deadline) {
+			return err
+		}
+		tflog.Debug(ctx, "password change throttled, retrying", map[string]interface{}{"role": plan.Name.ValueString(), "error": err.Error()})
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func (r *roleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan roleModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
-	return diags
+	session := r.session(&resp.Diagnostics)
+	if session == nil {
+		return
+	}
+	defer session.Close()
+
+	if err := r.writeRole(ctx, session, true, true, plan); err != nil {
+		resp.Diagnostics.AddError("Unable to create role", err.Error())
+		return
+	}
+
+	plan.ID = plan.Name
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
-func resourceRoleUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	return resourceRoleCreateOrUpdate(ctx, d, meta, false)
+func (r *roleResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state roleModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	session := r.session(&resp.Diagnostics)
+	if session == nil {
+		return
+	}
+	defer session.Close()
+
+	name := state.ID.ValueString()
+	role, login, superUser, saltedHash, err := readRole(session, name)
+	if errors.Is(err, errRoleNotFound) {
+		tflog.Warn(ctx, "role no longer exists, removing it from state", map[string]interface{}{"name": name})
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to read role", err.Error())
+		return
+	}
+
+	state.ID = types.StringValue(role)
+	state.Name = types.StringValue(role)
+	state.Login = types.BoolValue(login)
+	state.SuperUser = types.BoolValue(superUser)
+	// Cassandra stores only a salted hash. Keep the known password while it
+	// still matches; otherwise record the hash so the change shows as a diff.
+	if bcrypt.CompareHashAndPassword([]byte(saltedHash), []byte(state.Password.ValueString())) != nil {
+		state.Password = types.StringValue(saltedHash)
+	}
+	if state.Timeouts.IsUnknown() {
+		state.Timeouts = types.ObjectNull(timeoutsAttrTypes)
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
-// cqlEscape escapes a value for use inside a single-quoted CQL string literal.
-func cqlEscape(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
+func (r *roleResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state roleModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	session := r.session(&resp.Diagnostics)
+	if session == nil {
+		return
+	}
+	defer session.Close()
+
+	setPassword := !plan.Password.Equal(state.Password)
+	if err := r.writeRole(ctx, session, false, setPassword, plan); err != nil {
+		resp.Diagnostics.AddError("Unable to update role", err.Error())
+		return
+	}
+
+	plan.ID = plan.Name
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}
+
+func (r *roleResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state roleModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	session := r.session(&resp.Diagnostics)
+	if session == nil {
+		return
+	}
+	defer session.Close()
+
+	if err := session.Query(fmt.Sprintf(`DROP ROLE IF EXISTS '%s'`, cqlEscape(state.Name.ValueString()))).Exec(); err != nil {
+		resp.Diagnostics.AddError("Unable to delete role", err.Error())
+	}
+}
+
+func (r *roleResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	// Read fills in the rest; the password is recorded as Cassandra's hash.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("password"), "")...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("timeouts"), types.ObjectNull(timeoutsAttrTypes))...)
 }

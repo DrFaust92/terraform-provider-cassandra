@@ -4,18 +4,17 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gocql/gocql"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 func TestAccCassandraRole_update(t *testing.T) {
 	newPassword := testAccRolePassword + "-rotated"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraRoleDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraRoleDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraRoleConfigFull("update_role", testAccRolePassword, true, false),
@@ -44,9 +43,9 @@ func TestAccCassandraRole_update(t *testing.T) {
 // straight after the role is created.
 func TestAccCassandraRole_updateWithoutPassword(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraRoleDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraRoleDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraRoleConfigFull("update_login_role", testAccRolePassword, true, false),
@@ -61,9 +60,9 @@ func TestAccCassandraRole_updateWithoutPassword(t *testing.T) {
 
 func TestAccCassandraRole_import(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraRoleDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraRoleDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraRoleConfigFull("import_role", testAccRolePassword, true, false),
@@ -83,9 +82,9 @@ func TestAccCassandraRole_import(t *testing.T) {
 // the refresh.
 func TestAccCassandraRole_disappears(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraRoleDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraRoleDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraRoleConfigFull("gone_role", testAccRolePassword, true, false),
@@ -101,9 +100,9 @@ func TestAccCassandraRole_disappears(t *testing.T) {
 
 func TestAccCassandraKeyspace_update(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraKeyspaceDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraKeyspaceDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraKeyspaceConfigFull("update_ks", "SimpleStrategy", `replication_factor = 1`, true),
@@ -140,9 +139,9 @@ func TestAccCassandraKeyspace_update(t *testing.T) {
 // A keyspace dropped outside Terraform must be planned for re-creation.
 func TestAccCassandraKeyspace_disappears(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraKeyspaceDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraKeyspaceDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraKeyspaceConfigFull("gone_ks", "SimpleStrategy", `replication_factor = 1`, true),
@@ -183,7 +182,7 @@ resource "cassandra_keyspace" "keyspace" {
 // testAccCassandraExec runs a CQL statement outside Terraform.
 func testAccCassandraExec(cql string) resource.TestCheckFunc {
 	return func(*terraform.State) error {
-		session, err := testAccProvider.Meta().(*gocql.ClusterConfig).CreateSession()
+		session, err := testAccCluster().CreateSession()
 		if err != nil {
 			return err
 		}

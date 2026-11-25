@@ -46,7 +46,7 @@ resource "cassandra_keyspace" "multi_dc" {
 
 ### Read-Only
 
-- `id` (String) The ID of this resource.
+- `id` (String) Name of the keyspace.
 
 ## Import
 
