@@ -31,18 +31,18 @@ resource "cassandra_role" "app" {
 
 - `login` (Boolean) Allow the role to log in. Defaults to `true`.
 - `super_user` (Boolean) Allow the role to create and manage other roles. Defaults to `false`.
-- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
+- `timeouts` (Block, Optional) Timeouts for role operations. (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
-- `id` (String) The ID of this resource.
+- `id` (String) Name of the role.
 
 <a id="nestedblock--timeouts"></a>
 ### Nested Schema for `timeouts`
 
 Optional:
 
-- `default` (String)
+- `default` (String) How long to retry a password change that Cassandra throttles, as a duration such as `30s` or `2m`. Defaults to `1m`.
 
 ## Import
 

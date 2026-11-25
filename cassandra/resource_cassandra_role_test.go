@@ -5,9 +5,8 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/gocql/gocql"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 // testAccRolePassword satisfies the 40-512 character password validation.
@@ -17,9 +16,9 @@ func TestAccCassandraRole_basic(t *testing.T) {
 	name := "user"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraRoleDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraRoleDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraRoleConfigBasic(name),
@@ -37,13 +36,13 @@ func TestAccCassandraRole_invalid(t *testing.T) {
 	name := "invalid\\\"name"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraRoleDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraRoleDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config:      testAccCassandraRoleConfigBasic(name),
-				ExpectError: regexp.MustCompile("name must contain between 1 and 256 chars and must not contain double quote"),
+				ExpectError: regexp.MustCompile(`must\s+not\s+contain\s+double\s+quote`),
 			},
 		},
 	})
@@ -54,9 +53,9 @@ func TestAccCassandraRole_quotedPassword(t *testing.T) {
 	password := testAccRolePassword + "-it's-quoted"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraRoleDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraRoleDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: fmt.Sprintf(`
@@ -84,7 +83,7 @@ resource "cassandra_role" "user" {
 }
 
 func testAccCassandraRoleDestroy(s *terraform.State) error {
-	cluster := testAccProvider.Meta().(*gocql.ClusterConfig)
+	cluster := testAccCluster()
 	session, sessionCreateError := cluster.CreateSession()
 
 	if sessionCreateError != nil {
@@ -123,7 +122,7 @@ func testAccCassandraRoleExists(resourceKey string) resource.TestCheckFunc {
 			return fmt.Errorf("no ID is set")
 		}
 
-		cluster := testAccProvider.Meta().(*gocql.ClusterConfig)
+		cluster := testAccCluster()
 
 		session, sessionCreateError := cluster.CreateSession()
 

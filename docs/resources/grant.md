@@ -51,4 +51,4 @@ resource "cassandra_grant" "write_events" {
 
 ### Read-Only
 
-- `id` (String) The ID of this resource.
+- `id` (String) Hash identifying the grant.

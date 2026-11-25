@@ -6,17 +6,17 @@ import (
 	"testing"
 
 	"github.com/gocql/gocql"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 func TestAccCassandraKeyspace_basic(t *testing.T) {
 	keyspace := "some_keyspace"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraKeyspaceDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraKeyspaceDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraKeyspaceConfigBasic(keyspace),
@@ -41,9 +41,9 @@ func TestAccCassandraKeyspace_broken(t *testing.T) {
 	keyspace := "some_keyspace"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraKeyspaceDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraKeyspaceDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config:      testAccCassandraKeyspaceConfigBroken(keyspace),
@@ -78,7 +78,7 @@ resource "cassandra_keyspace" "keyspace" {
 }
 
 func testAccCassandraKeyspaceDestroy(s *terraform.State) error {
-	cluster := testAccProvider.Meta().(*gocql.ClusterConfig)
+	cluster := testAccCluster()
 	session, sessionCreateError := cluster.CreateSession()
 
 	if sessionCreateError != nil {
@@ -117,7 +117,7 @@ func testAccCassandraKeyspaceExists(resourceKey string) resource.TestCheckFunc {
 			return fmt.Errorf("no ID is set")
 		}
 
-		cluster := testAccProvider.Meta().(*gocql.ClusterConfig)
+		cluster := testAccCluster()
 
 		session, sessionCreateError := cluster.CreateSession()
 

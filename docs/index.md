@@ -35,18 +35,18 @@ provider "cassandra" {
 
 ### Optional
 
-- `connection_timeout` (Number) Connection timeout to the cluster, in milliseconds.
-- `consistency` (String) Default consistency level for queries.
-- `cql_version` (String) CQL version.
+- `connection_timeout` (Number) Connection timeout to the cluster, in milliseconds. Defaults to `1000`.
+- `consistency` (String) Default consistency level for queries. Defaults to `QUORUM`.
+- `cql_version` (String) CQL version. Defaults to `3.0.0`.
 - `disable_initial_host_lookup` (Boolean) Do not look up the other nodes in the `system.peers` table; connect only to the configured hosts.
 - `host` (String) Host of a node in the Cassandra cluster. Can also be set with the `CASSANDRA_HOST` environment variable. Conflicts with `hosts`.
 - `host_filter` (Boolean) Only connect to the configured hosts, ignoring other nodes the driver discovers. The hosts must exist before the provider is used.
 - `hosts` (List of String) Hosts of nodes in the Cassandra cluster.
 - `keyspace` (String) Initial keyspace for the connection.
-- `min_tls_version` (String) Minimum TLS version used to connect to the cluster: one of `SSL3.0`, `TLS1.0`, `TLS1.1`, `TLS1.2`. Applies only when `use_ssl` is `true`.
+- `min_tls_version` (String) Minimum TLS version used to connect to the cluster: one of `TLS1.0`, `TLS1.1`, `TLS1.2`, `TLS1.3`. Defaults to `TLS1.2`. Applies only when `use_ssl` is `true`.
 - `password` (String, Sensitive) Cassandra client password. Can also be set with the `CASSANDRA_PASSWORD` environment variable.
 - `port` (Number) Cassandra CQL port. Can also be set with the `CASSANDRA_PORT` environment variable. Defaults to `9042`.
-- `protocol_version` (Number) CQL binary protocol version.
+- `protocol_version` (Number) CQL binary protocol version. Defaults to `4`.
 - `root_ca` (String) PEM-encoded root CA used to verify the cluster certificate. Applies only when `use_ssl` is `true`.
 - `use_ssl` (Boolean) Use TLS when connecting to the cluster.
 - `username` (String, Sensitive) Cassandra client username. Can also be set with the `CASSANDRA_USERNAME` environment variable.

@@ -8,15 +8,15 @@ import (
 	"testing"
 
 	"github.com/gocql/gocql"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 func TestAccCassandraGrant_keyspace(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraGrantDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraGrantDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraGrantConfig("grant_ks_role", `
@@ -38,9 +38,9 @@ func TestAccCassandraGrant_keyspace(t *testing.T) {
 
 func TestAccCassandraGrant_allKeyspaces(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraGrantDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraGrantDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraGrantConfig("grant_all_ks_role", `
@@ -55,9 +55,9 @@ func TestAccCassandraGrant_allKeyspaces(t *testing.T) {
 
 func TestAccCassandraGrant_role(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraGrantDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraGrantDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraGrantConfig("grant_role_role", `
@@ -83,9 +83,9 @@ resource "cassandra_role" "target" {
 // Cassandra unchanged.
 func TestAccCassandraGrant_granteeSpecialCharacters(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraGrantDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraGrantDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraGrantConfig("app&ops<1>", `
@@ -106,9 +106,9 @@ func TestAccCassandraGrant_granteeSpecialCharacters(t *testing.T) {
 // the refresh.
 func TestAccCassandraGrant_disappears(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
-		CheckDestroy:      testAccCassandraGrantDestroy,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCassandraGrantDestroy,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraGrantConfig("grant_gone_role", `
@@ -128,8 +128,8 @@ func TestAccCassandraGrant_disappears(t *testing.T) {
 
 func TestAccCassandraGrant_invalidResourceForPrivilege(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviderFactories,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccCassandraGrantConfig("grant_invalid_role", `
@@ -207,7 +207,7 @@ func testAccCassandraGrantExists(resourceKey string) resource.TestCheckFunc {
 			return fmt.Errorf("no ID is set")
 		}
 
-		session, err := testAccProvider.Meta().(*gocql.ClusterConfig).CreateSession()
+		session, err := testAccCluster().CreateSession()
 		if err != nil {
 			return err
 		}
@@ -232,7 +232,7 @@ func testAccCassandraGrantRevoke(resourceKey string) resource.TestCheckFunc {
 			return fmt.Errorf("not found: %s", resourceKey)
 		}
 
-		session, err := testAccProvider.Meta().(*gocql.ClusterConfig).CreateSession()
+		session, err := testAccCluster().CreateSession()
 		if err != nil {
 			return err
 		}
@@ -247,7 +247,7 @@ func testAccCassandraGrantRevoke(resourceKey string) resource.TestCheckFunc {
 }
 
 func testAccCassandraGrantDestroy(s *terraform.State) error {
-	session, err := testAccProvider.Meta().(*gocql.ClusterConfig).CreateSession()
+	session, err := testAccCluster().CreateSession()
 	if err != nil {
 		return err
 	}

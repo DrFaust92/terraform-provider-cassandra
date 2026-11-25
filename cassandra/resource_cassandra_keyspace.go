@@ -2,282 +2,229 @@ package cassandra
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/hashicorp/go-cty/cty"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
-const (
-	keyspaceLiteralPattern = `^[a-zA-Z0-9][a-zA-Z0-9_]{0,48}$`
-)
+const keyspaceLiteralPattern = `^[a-zA-Z0-9][a-zA-Z0-9_]{0,48}$`
 
 var (
-	keyspaceRegex, _ = regexp.Compile(keyspaceLiteralPattern)
-	boolToAction     = map[bool]string{
+	keyspaceRegex = regexp.MustCompile(keyspaceLiteralPattern)
+	boolToAction  = map[bool]string{
 		true:  "CREATE",
 		false: "ALTER",
 	}
 )
 
-func resourceCassandraKeyspace() *schema.Resource {
-	return &schema.Resource{
-		Description:   "Manages a Cassandra keyspace.",
-		CreateContext: resourceKeyspaceCreate,
-		ReadContext:   resourceKeyspaceRead,
-		UpdateContext: resourceKeyspaceUpdate,
-		DeleteContext: resourceKeyspaceDelete,
-		Importer: &schema.ResourceImporter{
-			StateContext: schema.ImportStatePassthroughContext,
-		},
-		Schema: map[string]*schema.Schema{
-			"name": {
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "Name of the keyspace, 1 to 48 characters.",
-				ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
-					name := i.(string)
+var (
+	_ resource.Resource                = &keyspaceResource{}
+	_ resource.ResourceWithConfigure   = &keyspaceResource{}
+	_ resource.ResourceWithImportState = &keyspaceResource{}
+)
 
-					if !keyspaceRegex.MatchString(name) {
-						return diag.Diagnostics{
-							{
-								Severity:      diag.Error,
-								Summary:       "Invalid keyspace name",
-								Detail:        fmt.Sprintf("%s: invalid keyspace name - must match %s", name, keyspaceLiteralPattern),
-								AttributePath: path,
-							},
-						}
-					}
+type keyspaceResource struct {
+	clusterResource
+}
 
-					if name == "system" {
-						return diag.Diagnostics{
-							{
-								Severity:      diag.Error,
-								Summary:       "Cannot manage system keyspace",
-								Detail:        "cannot manage system keyspace, it is internal to Cassandra",
-								AttributePath: path,
-							},
-						}
-					}
+func newKeyspaceResource() resource.Resource {
+	return &keyspaceResource{}
+}
 
-					return nil
+type keyspaceModel struct {
+	ID                  types.String `tfsdk:"id"`
+	Name                types.String `tfsdk:"name"`
+	ReplicationStrategy types.String `tfsdk:"replication_strategy"`
+	StrategyOptions     types.Map    `tfsdk:"strategy_options"`
+	DurableWrites       types.Bool   `tfsdk:"durable_writes"`
+}
+
+func (r *keyspaceResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_keyspace"
+}
+
+func (r *keyspaceResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Manages a Cassandra keyspace.",
+		Attributes: map[string]schema.Attribute{
+			"id": schema.StringAttribute{
+				Computed:      true,
+				Description:   "Name of the keyspace.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"name": schema.StringAttribute{
+				Required:      true,
+				Description:   "Name of the keyspace, 1 to 48 characters.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(keyspaceRegex, "invalid keyspace name - must match "+keyspaceLiteralPattern),
+					stringvalidator.NoneOf("system"),
 				},
 			},
-			"replication_strategy": {
-				Type:         schema.TypeString,
-				Required:     true,
-				ForceNew:     false,
-				Description:  "Replication strategy: `SimpleStrategy` or `NetworkTopologyStrategy`.",
-				ValidateFunc: validation.StringInSlice([]string{"SimpleStrategy", "NetworkTopologyStrategy", "SingleRegionStrategy"}, false),
-			},
-			"strategy_options": {
-				Type:        schema.TypeMap,
+			"replication_strategy": schema.StringAttribute{
 				Required:    true,
-				ForceNew:    false,
+				Description: "Replication strategy: `SimpleStrategy` or `NetworkTopologyStrategy`.",
+				Validators:  []validator.String{stringvalidator.OneOf("SimpleStrategy", "NetworkTopologyStrategy", "SingleRegionStrategy")},
+			},
+			"strategy_options": schema.MapAttribute{
+				ElementType: types.StringType,
+				Required:    true,
 				Description: "Options for the replication strategy. `SimpleStrategy` takes `replication_factor`; `NetworkTopologyStrategy` takes data center names mapped to their replication factor.",
-				Elem: &schema.Schema{
-					Type: schema.TypeString,
-				},
-				StateFunc: func(v interface{}) string {
-					strategyOptions := v.(map[string]interface{})
-
-					// The zero-length prefix is intentional: the hash is stored
-					// in state, so changing how it is built would show a diff
-					// for every existing keyspace.
-					keys := make([]string, len(strategyOptions))
-
-					for key, value := range strategyOptions {
-
-						strValue := value.(string)
-
-						keys = append(keys, fmt.Sprintf("%q=%q", key, strValue)) //nolint:makezero // see above
-					}
-
-					sort.Strings(keys)
-
-					return hash(strings.Join(keys, ", "))
-				},
+				Validators:  []validator.Map{mapvalidator.SizeAtLeast(1)},
 			},
-			"durable_writes": {
-				Type:        schema.TypeBool,
+			"durable_writes": schema.BoolAttribute{
 				Optional:    true,
-				ForceNew:    false,
+				Computed:    true,
+				Default:     booldefault.StaticBool(true),
 				Description: "Enable durable writes. Disabling them is not recommended. Defaults to `true`.",
-				Default:     true,
 			},
 		},
 	}
 }
 
-func generateCreateOrUpdateKeyspaceQueryString(name string, create bool, replicationStrategy string, strategyOptions map[string]interface{}, durableWrites bool) (string, error) {
-
-	numberOfStrategyOptions := len(strategyOptions)
-
-	if numberOfStrategyOptions == 0 {
-		return "", fmt.Errorf("must specify strategy options - see https://docs.datastax.com/en/cql/3.3/cql/cql_reference/cqlCreateKeyspace.html")
+func keyspaceQuery(create bool, m keyspaceModel) string {
+	options := map[string]string{}
+	for k, v := range m.StrategyOptions.Elements() {
+		options[k] = v.(types.String).ValueString()
 	}
-
-	query := fmt.Sprintf(`%s KEYSPACE %s WITH REPLICATION = { 'class' : '%s'`, boolToAction[create], name, replicationStrategy)
-
-	for key, value := range strategyOptions {
-		query += fmt.Sprintf(`, '%s' : '%s'`, key, value.(string))
+	keys := make([]string, 0, len(options))
+	for k := range options {
+		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 
-	query += fmt.Sprintf(` } AND DURABLE_WRITES = %t`, durableWrites)
-
-	log.Println("query", query)
-
-	return query, nil
+	query := fmt.Sprintf(`%s KEYSPACE %s WITH REPLICATION = { 'class' : '%s'`, boolToAction[create], m.Name.ValueString(), cqlEscape(m.ReplicationStrategy.ValueString()))
+	for _, k := range keys {
+		query += fmt.Sprintf(`, '%s' : '%s'`, cqlEscape(k), cqlEscape(options[k]))
+	}
+	return query + fmt.Sprintf(` } AND DURABLE_WRITES = %t`, m.DurableWrites.ValueBool())
 }
 
-func resourceKeyspaceCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	name := d.Get("name").(string)
-	replicationStrategy := d.Get("replication_strategy").(string)
-	strategyOptions := d.Get("strategy_options").(map[string]interface{})
-	durableWrites := d.Get("durable_writes").(bool)
-	var diags diag.Diagnostics
-
-	query, err := generateCreateOrUpdateKeyspaceQueryString(name, true, replicationStrategy, strategyOptions, durableWrites)
-
-	if err != nil {
-		return diag.FromErr(err)
+func (r *keyspaceResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan keyspaceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
-	cluster := meta.(*gocql.ClusterConfig)
-	start := time.Now()
-	session, sessionCreateError := cluster.CreateSession()
-	elapsed := time.Since(start)
-
-	log.Printf("Getting a session took %s", elapsed)
-
-	if sessionCreateError != nil {
-		return diag.FromErr(sessionCreateError)
+	session := r.session(&resp.Diagnostics)
+	if session == nil {
+		return
 	}
-
 	defer session.Close()
 
-	err = session.Query(query).Exec()
-
-	if err != nil {
-		return diag.FromErr(err)
+	query := keyspaceQuery(true, plan)
+	tflog.Debug(ctx, "creating keyspace", map[string]interface{}{"query": query})
+	if err := session.Query(query).Exec(); err != nil {
+		resp.Diagnostics.AddError("Unable to create keyspace", err.Error())
+		return
 	}
 
-	d.SetId(name)
-
-	diags = append(diags, resourceKeyspaceRead(ctx, d, meta)...)
-
-	return diags
+	// Store the configured options: Cassandra may expand them (for example
+	// replication_factor under NetworkTopologyStrategy), which shows as a diff
+	// on the next plan, as it always has.
+	plan.ID = plan.Name
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
-func resourceKeyspaceRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	name := d.Id()
-	cluster := meta.(*gocql.ClusterConfig)
-	var diags diag.Diagnostics
-
-	start := time.Now()
-	session, sessionCreateError := cluster.CreateSession()
-	elapsed := time.Since(start)
-
-	log.Printf("Getting a session took %s", elapsed)
-
-	if sessionCreateError != nil {
-		return diag.FromErr(sessionCreateError)
+func (r *keyspaceResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state keyspaceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
+	session := r.session(&resp.Diagnostics)
+	if session == nil {
+		return
+	}
 	defer session.Close()
 
-	keyspaceMetadata, err := session.KeyspaceMetadata(name)
-
-	if err == gocql.ErrKeyspaceDoesNotExist {
-		d.SetId("")
-		return nil
-	} else if err != nil {
-		return diag.FromErr(err)
+	name := state.ID.ValueString()
+	metadata, err := session.KeyspaceMetadata(name)
+	if errors.Is(err, gocql.ErrKeyspaceDoesNotExist) {
+		tflog.Warn(ctx, "keyspace no longer exists, removing it from state", map[string]interface{}{"name": name})
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to read keyspace", err.Error())
+		return
 	}
 
-	strategyOptions := make(map[string]string)
-
-	for key, value := range keyspaceMetadata.StrategyOptions {
-		strategyOptions[key] = value.(string)
+	options := map[string]string{}
+	for k, v := range metadata.StrategyOptions {
+		options[k] = fmt.Sprint(v)
 	}
+	strategyOptions, d := types.MapValueFrom(ctx, types.StringType, options)
+	resp.Diagnostics.Append(d...)
 
-	strategyClass := strings.TrimPrefix(keyspaceMetadata.StrategyClass, "org.apache.cassandra.locator.")
+	state.ID = types.StringValue(name)
+	state.Name = types.StringValue(name)
+	state.ReplicationStrategy = types.StringValue(strings.TrimPrefix(metadata.StrategyClass, "org.apache.cassandra.locator."))
+	state.StrategyOptions = strategyOptions
+	state.DurableWrites = types.BoolValue(metadata.DurableWrites)
 
-	d.Set("name", name)
-	d.Set("replication_strategy", strategyClass)
-	d.Set("durable_writes", keyspaceMetadata.DurableWrites)
-	d.Set("strategy_options", strategyOptions)
-
-	return diags
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
-func resourceKeyspaceDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	name := d.Get("name").(string)
-	cluster := meta.(*gocql.ClusterConfig)
-	var diags diag.Diagnostics
-
-	start := time.Now()
-	session, sessionCreateError := cluster.CreateSession()
-	elapsed := time.Since(start)
-
-	log.Printf("Getting a session took %s", elapsed)
-
-	if sessionCreateError != nil {
-		return diag.FromErr(sessionCreateError)
+func (r *keyspaceResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan keyspaceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
+	session := r.session(&resp.Diagnostics)
+	if session == nil {
+		return
+	}
 	defer session.Close()
 
-	err := session.Query(fmt.Sprintf(`DROP KEYSPACE %s`, name)).Exec()
-	if err != nil {
-		return diag.FromErr(err)
+	query := keyspaceQuery(false, plan)
+	tflog.Debug(ctx, "updating keyspace", map[string]interface{}{"query": query})
+	if err := session.Query(query).Exec(); err != nil {
+		resp.Diagnostics.AddError("Unable to update keyspace", err.Error())
+		return
 	}
 
-	return diags
+	plan.ID = plan.Name
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
-func resourceKeyspaceUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	name := d.Get("name").(string)
-	replicationStrategy := d.Get("replication_strategy").(string)
-	strategyOptions := d.Get("strategy_options").(map[string]interface{})
-	durableWrites := d.Get("durable_writes").(bool)
-	var diags diag.Diagnostics
-
-	query, err := generateCreateOrUpdateKeyspaceQueryString(name, false, replicationStrategy, strategyOptions, durableWrites)
-
-	if err != nil {
-		return diag.FromErr(err)
+func (r *keyspaceResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state keyspaceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
-	cluster := meta.(*gocql.ClusterConfig)
-	start := time.Now()
-	session, sessionCreateError := cluster.CreateSession()
-	elapsed := time.Since(start)
-
-	log.Printf("Getting a session took %s", elapsed)
-
-	if sessionCreateError != nil {
-		return diag.FromErr(sessionCreateError)
+	session := r.session(&resp.Diagnostics)
+	if session == nil {
+		return
 	}
-
 	defer session.Close()
 
-	err = session.Query(query).Exec()
-
-	if err != nil {
-		return diag.FromErr(err)
+	if err := session.Query(fmt.Sprintf(`DROP KEYSPACE IF EXISTS %s`, state.Name.ValueString())).Exec(); err != nil {
+		resp.Diagnostics.AddError("Unable to delete keyspace", err.Error())
 	}
+}
 
-	diags = append(diags, resourceKeyspaceRead(ctx, d, meta)...)
-
-	return diags
+func (r *keyspaceResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
