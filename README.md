@@ -7,7 +7,7 @@ It will provide the following features with respect to CQL 3.0.0 spec
 
 # Requirements
 
--	[Terraform](https://www.terraform.io/downloads.html) >= 0.12.26
--	[Go](https://golang.org/doc/install) >= 1.15
+-	[Terraform](https://www.terraform.io/downloads.html) >= 1.0
+-	[Go](https://golang.org/doc/install) >= 1.27 (see `go.mod`)
 
 ## [Documentation](docs/)
