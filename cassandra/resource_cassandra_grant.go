@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"html/template"
 	"log"
 	"regexp"
 	"strings"
+	"text/template"
 
 	"github.com/gocql/gocql"
 	"github.com/hashicorp/go-cty/cty"
@@ -428,7 +428,9 @@ func resourceGrantRead(ctx context.Context, d *schema.ResourceData, meta interfa
 	}
 
 	if !exists {
-		return diag.Errorf("Grant does not exist")
+		log.Printf("[WARN] grant %s no longer exists, removing it from state", d.Id())
+		d.SetId("")
+		return diags
 	}
 
 	grant, err := parseData(d)
