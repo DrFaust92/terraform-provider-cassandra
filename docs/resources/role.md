@@ -31,10 +31,18 @@ resource "cassandra_role" "app" {
 
 - `login` (Boolean) Allow the role to log in. Defaults to `true`.
 - `super_user` (Boolean) Allow the role to create and manage other roles. Defaults to `false`.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
 - `id` (String) The ID of this resource.
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `default` (String)
 
 ## Import
 
