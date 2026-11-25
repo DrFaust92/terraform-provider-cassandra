@@ -2,6 +2,7 @@ package cassandra
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gocql/gocql"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"golang.org/x/crypto/bcrypt"
@@ -22,6 +24,9 @@ func resourceCassandraRole() *schema.Resource {
 		ReadContext:   resourceRoleRead,
 		UpdateContext: resourceRoleUpdate,
 		DeleteContext: resourceRoleDelete,
+		Timeouts: &schema.ResourceTimeout{
+			Default: schema.DefaultTimeout(1 * time.Minute),
+		},
 		Importer: &schema.ResourceImporter{
 			StateContext: schema.ImportStatePassthroughContext,
 		},
@@ -78,8 +83,15 @@ func readRole(session *gocql.Session, name string) (string, bool, bool, string, 
 		return role, canLogin, isSuperUser, saltedHash, nil
 	}
 
-	return "", false, false, "", fmt.Errorf("cannot read role with name %s", name)
+	if err := iter.Close(); err != nil {
+		return "", false, false, "", err
+	}
+
+	return "", false, false, "", fmt.Errorf("cannot read role with name %s: %w", name, errRoleNotFound)
 }
+
+// errRoleNotFound is returned by readRole when the role does not exist.
+var errRoleNotFound = errors.New("role not found")
 
 func resourceRoleCreateOrUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}, createRole bool) diag.Diagnostics {
 	name := d.Get("name").(string)
@@ -101,7 +113,25 @@ func resourceRoleCreateOrUpdate(ctx context.Context, d *schema.ResourceData, met
 
 	defer session.Close()
 
-	createErr := session.Query(fmt.Sprintf(`%s ROLE '%s' WITH PASSWORD = '%s' AND LOGIN = %v AND SUPERUSER = %v`, boolToAction[createRole], cqlEscape(name), cqlEscape(password), login, superUser)).Exec()
+	options := fmt.Sprintf(`LOGIN = %v AND SUPERUSER = %v`, login, superUser)
+	// Only send the password when it is set or changed: Cassandra 5 rejects a
+	// password change within credentials_update_interval of the previous one.
+	if createRole || d.HasChange("password") {
+		options = fmt.Sprintf(`PASSWORD = '%s' AND %s`, cqlEscape(password), options)
+	}
+	query := fmt.Sprintf(`%s ROLE '%s' WITH %s`, boolToAction[createRole], cqlEscape(name), options)
+
+	createErr := retry.RetryContext(ctx, d.Timeout(schema.TimeoutDefault), func() *retry.RetryError {
+		err := session.Query(query).Exec()
+		if err != nil && strings.Contains(err.Error(), "can only be changed every") {
+			log.Printf("[DEBUG] password change for role %s throttled, retrying: %s", name, err)
+			return retry.RetryableError(err)
+		}
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+		return nil
+	})
 	if createErr != nil {
 		return diag.FromErr(createErr)
 	}
@@ -140,6 +170,11 @@ func resourceRoleRead(ctx context.Context, d *schema.ResourceData, meta interfac
 	defer session.Close()
 	_name, login, superUser, saltedHash, readRoleErr := readRole(session, name)
 
+	if errors.Is(readRoleErr, errRoleNotFound) {
+		log.Printf("[WARN] role %s no longer exists, removing it from state", name)
+		d.SetId("")
+		return diags
+	}
 	if readRoleErr != nil {
 		return diag.FromErr(readRoleErr)
 	}
